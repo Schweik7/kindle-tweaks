@@ -5,7 +5,8 @@
 #   tweak.sh <popup|collview|pdffull|all> on|off   开关系统文件补丁
 #   tweak.sh coll sync|on|off|purge      文件夹收藏夹：立即同步 / 开机自动同步 / 关闭 / 删除生成的收藏夹
 #   tweak.sh ssrandom on|off             linkss 屏保开机随机排序
-#   tweak.sh manga on|off|now            大漫画 epub 转 PDF：充电时自动转换开关 / 立即转换
+#   tweak.sh manga on|off|now            epub 自动转换（大漫画→PDF，文字书→mobi）：充电时自动转换开关 / 立即转换
+#   tweak.sh manga dir <序号>            按目录转换（序号是菜单生成时 mangaconv/dirs.txt 的行号）
 # 补丁文件放在 files/：<系统文件名>.orig（本机原版）和 <系统文件名>.patched（电脑上生成）
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH
 EXT=/mnt/us/extensions/kindletweaks
@@ -167,6 +168,13 @@ manga() {
 			setsid sh -c "nice -n 19 ${PY} run --force >> ${M}/convert.log 2>&1" >/dev/null 2>&1 </dev/null &
 			say "manga: 已在后台开始转换"
 			;;
+		dir)
+			# 菜单里按序号选目录（路径有空格、中文，不直接放进 KUAL 参数）
+			D=$(sed -n "${2}p" ${M}/dirs.txt 2>/dev/null)
+			[ -d "${D}" ] || { say "manga: 目录序号 $2 无效，请刷新菜单"; return 1; }
+			setsid sh -c "nice -n 19 ${PY} run --dir \"${D}\" >> ${M}/convert.log 2>&1" >/dev/null 2>&1 </dev/null &
+			say "manga: 开始转换目录 ${D}"
+			;;
 		on)
 			mntroot rw
 			cp ${M}/mangaconv.conf /etc/upstart/mangaconv.conf
@@ -186,6 +194,31 @@ manga() {
 }
 
 manga_state() { [ -f /etc/upstart/mangaconv.conf ] && echo on || echo off; }
+manga_min() { sed -n 's/.*"min_size_mb"[^0-9]*\([0-9]*\).*/\1/p' ${EXT}/mangaconv/config.json 2>/dev/null | head -1; }
+
+# 含 epub（且旁边还没有同名 pdf）的目录 -> KUAL 菜单项；序号对应 dirs.txt 的行号
+manga_dir_items() {
+	M=${EXT}/mangaconv
+	find /mnt/us/documents -name "*.epub" 2>/dev/null | while read -r f; do
+		b=${f%.*}
+		[ -f "${b}.pdf" ] || [ -f "${b}.mobi" ] || [ -f "${b}.azw3" ] || echo "${f%/*}"
+	done | sort | uniq -c > ${M}/dirs.count
+	sed 's/^ *[0-9]* //' ${M}/dirs.count > ${M}/dirs.txt
+	n=0
+	sep=""
+	while read -r cnt d; do
+		n=$((n + 1))
+		name=${d#/mnt/us/documents}
+		name=${name#/}
+		[ -z "${name}" ] && name="documents 根目录（连同子目录）"
+		name=$(printf '%s' "${name}" | sed 's/["\\]/ /g')
+		printf '%s\t\t\t\t{"name": "%s（%s 本）", "priority": %d, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "manga dir %d"}' "${sep}" "${name}" "${cnt}" ${n} "${EXT}" ${n}
+		sep=",
+"
+	done < ${M}/dirs.count
+	[ ${n} = 0 ] && printf '\t\t\t\t{"name": "documents 里没有待转换的 epub", "priority": 1, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "menu"}' "${EXT}"
+	echo
+}
 manga_status() { head -c 120 ${EXT}/mangaconv/status.txt 2>/dev/null | tr -d '"\\\n' || true; }
 
 ssrandom() {
@@ -248,11 +281,15 @@ EOF
 EOF
 		ms=$(manga_status)
 		cat <<EOF
-		{"name": "大漫画 epub 转 PDF [充电自动转换$(label $(manga_state))${ms:+ · ${ms}}]", "priority": 5, "items": [
-			{"name": "开启：充电时自动转换", "priority": 1, "checked": $([ $(manga_state) = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga on"},
-			{"name": "关闭自动转换", "priority": 2, "checked": $([ $(manga_state) = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga off"},
-			{"name": "立即转换（不等充电）", "priority": 3, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga now"},
-			{"name": "刷新进度", "priority": 4, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"}
+		{"name": "epub 自动转换 [$(label $(manga_state))]", "priority": 5, "items": [
+			{"name": "${ms:-还没运行过}（点此刷新）", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "开启：充电时自动转换", "priority": 2, "checked": $([ $(manga_state) = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga on"},
+			{"name": "关闭自动转换", "priority": 3, "checked": $([ $(manga_state) = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga off"},
+			{"name": "立即转换（不等充电）", "priority": 4, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga now"},
+			{"name": "规则：漫画≥$(manga_min)MB→PDF，文字书→mobi$([ -f ${EXT}/bin/kindlegen ] && [ -f ${EXT}/bin/qemu-i386-static ] || echo '（缺 kindlegen）')", "priority": 5, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "按目录转换（不限大小）", "priority": 6, "items": [
+$(manga_dir_items)
+			]}
 		]},
 EOF
 		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 6 "关闭（固定顺序，开机更快）"
@@ -301,7 +338,7 @@ case "$1" in
 		menu
 		;;
 	manga)
-		manga $2
+		manga $2 $3
 		rc=$?
 		[ "$2" = autorun ] && exit ${rc}
 		screen "kindle-tweaks: manga convert $2"

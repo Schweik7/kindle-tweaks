@@ -1,4 +1,14 @@
-# 05 大漫画 epub 充电时自动转 PDF
+# 05 epub 自动转换：大漫画 → PDF，文字书 → mobi
+
+导入 epub 后，充电时自动按内容决定怎么转：
+
+| epub 类型 | 转成 | 工具 |
+|---|---|---|
+| 漫画（几乎每页一张图）且 ≥ `min_size_mb`（默认 50 MB） | 全屏 PDF | `kcc_lite.py`（KCC 精简移植），见第 1–5 节 |
+| 文字书（任意大小） | mobi（含 KF8，排版和 azw3 一样） | KindleGen 经 qemu 在 Kindle 上运行，见第 7 节 |
+| 小于 `min_size_mb` 的漫画 | 不自动转 | 在菜单「按目录转换（不限大小）」里选目录，手动转 PDF |
+
+旁边已有同名 `.pdf` / `.mobi` / `.azw3` 的 epub 一律不转。
 
 > 验证：Kindle Oasis 3，FW 5.15.1.1，KUAL python3（Python 3.9 + Pillow 9.0）。代码：[`extensions/kindletweaks/mangaconv/`](../extensions/kindletweaks/mangaconv/)。
 > 配合 [04 PDF 全屏](04-pdf-fullscreen.md) 使用：转出来的 PDF 每页正好一屏，阅读器里 1:1 全屏显示。
@@ -56,11 +66,16 @@
   - 转换期间用 `lipc-wait-event -m com.lab126.powerd readyToSuspend` 监听这个事件，收到就回 `lipc-set-prop -i com.lab126.powerd deferSuspend 300`。屏幕照常显示屏保。
   - `deferSuspend` 只在这个状态下有效。平时设置会报 `lipcPropErrInvalidState`；不加 `-i` 会报 `NoSuchProperty`。
 
-KUAL 菜单：「Kindle Tweaks」→「大漫画 epub 转 PDF」
+KUAL 菜单：「Kindle Tweaks」→「epub 自动转换」
 
+- 第一行显示进度，比如「转换中 1/3 本，第 57/197 页」，点它就刷新。
 - **开启：充电时自动转换** / **关闭自动转换**：安装或移除 `/etc/upstart/mangaconv.conf`。升级固件后需要重新开启。
 - **立即转换（不等充电）**：后台处理一次队列，不检查充电。
-- **刷新进度**：菜单标题里会显示进度，比如「转换中 1/3 本，第 57/197 页」。
+- **规则：…**：显示当前规则；缺 KindleGen 时会标「缺 kindlegen」。
+- **按目录转换（不限大小）**：
+  - 列出 documents 里所有含待转换 epub 的目录和本数，选一个就在后台转那个目录（含子目录），不限大小、不等充电。
+  - 如果别的转换正在进行，会排队，等它结束再开始。
+  - KUAL 的参数里不能直接放带空格、中文的路径，所以菜单生成时把目录写进 `mangaconv/dirs.txt`，菜单项只传行号。
 
 ## 4 配置 `mangaconv/config.json`
 
@@ -94,6 +109,32 @@ tail $E/mangaconv/convert.log                 # 日志
 cat $E/mangaconv/state.json                   # 每本书的结果（done / skipped / failed 和原因）
 LD_LIBRARY_PATH=/mnt/us/python3/lib /mnt/us/python3/bin/python3.9 $E/mangaconv/mangaconv.py scan   # 看队列
 ```
+
+## 7 文字书 epub → mobi：KindleGen + qemu
+
+**为什么不像 calibre 那样直接转**：格式转换本身不难，难在运行环境。
+- epub 是 zip 包里的 HTML/CSS/图片，azw3（KF8）是把差不多的内容装进亚马逊的 PalmDB 二进制容器。
+- calibre 的转换流程依赖 lxml、html5-parser、css-parser 等一堆 C 扩展。它官方只有 x86 / arm64 版本，而 Kindle 是 32 位 armel 软浮点、glibc 2.20、可用内存约 200 MB，装不上。
+
+**做法**：
+- 亚马逊官方编译器 KindleGen 2.9 的 Linux 版是**静态链接的 x86 程序**。
+- Debian 的 `qemu-user-static`（armel）里的 `qemu-i386-static` 也是静态链接的，可以在 ARM 上逐条翻译执行 x86 指令。
+- 两个文件放进 `extensions/kindletweaks/bin/`，执行 `qemu-i386-static kindlegen book.epub` 就行，不用移植任何代码。
+- 下载：`python tools/fetch_kindlegen.py <目录>`。KindleGen 亚马逊已停止分发，脚本从 archive.org 下载；本仓库不包含这两个二进制。
+
+**参数和细节**：
+- `-c0`：不压缩，比 `-c1` 快得多，体积稍大。
+- `-dont_append_source`：不把原 epub 附在 mobi 末尾，否则体积翻倍。
+- KindleGen 会把 epub 解压到 `$TMPDIR`。默认的 `/tmp` 在内存里，所以把它设成 U 盘区的工作目录。
+- 返回码：0 成功；1 成功但有警告（很常见，比如封面 HTML 被忽略）；2 失败。失败时把日志里的 Error 行记进 `state.json`。
+- 输出 `.mobi` 同时含 KF7 和 KF8，Kindle 用 KF8 渲染，效果和 azw3 一样。书库里显示 epub 元数据里的书名。
+
+**实测**：
+- 《神经漫游者》（5.3 MB epub）用 `-c1`、并且和漫画转换同时跑：675 秒，输出 11.7 MB（含附带的源文件）。
+- 正式参数（`-c0 -dont_append_source`）、单独运行：613 秒，输出 6.3 MB。瓶颈是 qemu 模拟，不是压缩。普通小说大约 10 分钟一本，适合充电时在后台转。
+- KindleGen 在 qemu 下约占 18 MB 内存。
+
+## 8 杂项
 
 - 想重新转某本被跳过或失败的书：从 `state.json` 里删掉它那一条，或者改一下文件（mtime 变了就会重试）。
 - 已经有同名 `.pdf` 的 epub 不会转，不会覆盖你自己的 PDF。

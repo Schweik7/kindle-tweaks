@@ -15,7 +15,7 @@
 | 2 | 文件夹 → 收藏夹自动同步 | Kindle 不认文件夹；未注册时「新建收藏夹」是灰色的 | [docs/02-folder-collections.md](docs/02-folder-collections.md) |
 | 3 | 解锁「查看选项 → 收藏夹」视图 | 收藏夹里的书仍在书库第一层平铺；该视图在未注册时是灰色的 | [docs/03-collections-view.md](docs/03-collections-view.md) |
 | 4 | PDF 全屏 | PDF 底部常驻阅读百分比、四周有白边，设置里关不掉 | [docs/04-pdf-fullscreen.md](docs/04-pdf-fullscreen.md) |
-| 5 | 大漫画 epub 充电时自动转 PDF | Kindle 打不开 epub；KCC 依赖的 KindleGen 只有 x86 版。在 Kindle 上用精简移植的 KCC 直接转成全屏 PDF | [docs/05-manga-convert.md](docs/05-manga-convert.md) |
+| 5 | epub 充电时自动转换 | Kindle 打不开 epub。大漫画用精简移植的 KCC 转成全屏 PDF；文字书用 KindleGen（经 qemu 在 Kindle 上运行）转成 mobi；小漫画可按目录手动转 | [docs/05-manga-convert.md](docs/05-manga-convert.md) |
 | 6 | 屏保开机随机排序开关 | linkss 开机时重排所有屏保，图多时开机很慢 | （菜单里直接切换） |
 
 ## KUAL 菜单
@@ -26,8 +26,7 @@ Kindle Tweaks
 ├─ 解锁「查看选项→收藏夹」 [已开启] → 开启 / 关闭（还原原版）
 ├─ PDF 全屏（无底栏无边距） [已开启] → 开启 / 关闭（还原原版）
 ├─ 文件夹收藏夹 [自动同步已开启]     → 立即同步 / 开启自动同步 / 关闭自动同步 / 删除所有自动生成的收藏夹
-├─ 大漫画 epub 转 PDF [充电自动转换已开启 · 转换中 1/2 本，第 57/197 页]
-│                                    → 开启 / 关闭自动转换 / 立即转换（不等充电）/ 刷新进度
+├─ epub 自动转换 [已开启]           → 进度 / 开启 / 关闭 / 立即转换 / 规则 / 按目录转换（动态列出目录）
 ├─ 屏保开机随机排序（linkss） [已关闭] → 开启 / 关闭
 ├─ 升级固件后：全部补丁重新开启
 └─ 全部补丁还原原版
@@ -47,6 +46,7 @@ tools/                      在电脑上生成 .patched
   patch_kpp.py              KPPMainApp.js.hbc（功能 1，需要 hermes-dec）
   patch_ksdk.py             libKSDKLibrary.so（功能 3，纯 Python）
   pdf_fullscreen/build.py   3 个 Java jar（功能 4，需要 JDK 9+）
+  fetch_kindlegen.py        下载 KindleGen + qemu-i386-static（功能 5 的 epub→mobi，拷到扩展的 bin/）
 docs/                       原理、排查过程、新固件上怎么重做
 ```
 
@@ -86,6 +86,95 @@ scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 
 - 建议每个补丁第一次用时先临时试用（bind mount，重启即失效），方法见各功能文档。
 - SSH 等价命令：`sh /mnt/us/extensions/kindletweaks/tweak.sh status`、`tweak.sh pdffull on`、`tweak.sh all off` 等。不带参数运行会显示用法。
+
+## SSH 常用命令
+
+通过 USBNetwork 的 SSH 登录后（`ssh root@<kindle-ip>`），非交互执行时先补全 PATH：
+
+```sh
+export PATH=/usr/sbin:/sbin:$PATH          # 非交互 ssh 默认 PATH 里没有 lipc-*、mntroot、start/stop 等
+```
+
+**截屏**
+
+```sh
+/mnt/us/usbnet/bin/fbgrab /tmp/shot.png    # 读 /dev/fb0，生成 PNG（1264×1680）
+scp root@<kindle-ip>:/tmp/shot.png .        # 在电脑上取回
+```
+
+**打开书、回主页、电源**
+
+```sh
+# 直接打开一本书（文件必须已被书库索引；没索引好就把文件移出 documents 再移回来）
+lipc-set-prop com.lab126.appmgrd start "app://com.lab126.booklet.reader/mnt/us/documents/某书.pdf"
+lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home    # 回主页
+lipc-get-prop com.lab126.appmgrd activeApp                              # 当前前台应用
+
+lipc-set-prop com.lab126.powerd wakeUp 1               # 唤醒
+lipc-set-prop com.lab126.powerd powerButton 1          # 模拟按电源键（进/出屏保）
+lipc-set-prop com.lab126.powerd preventScreenSaver 1   # 调试时禁止进屏保，用完改回 0
+lipc-get-prop com.lab126.powerd isCharging             # 是否在充电（1/0）
+lipc-get-prop com.lab126.powerd status                 # 电源状态、休眠倒计时、电量
+```
+
+**重启界面进程**
+
+```sh
+restart kppmainapp          # 只重启书库/主页界面（改了 KPPMainApp.js.hbc、libKSDKLibrary.so 后）
+stop framework; while pidof cvm >/dev/null; do sleep 1; done; start framework   # 重启 Java 框架（改了 jar 后）
+# framework 重启后会回到上次的应用；若停在 KUAL 会是一片白屏，执行上面的「回主页」即可
+```
+
+**书库数据库（只读）**
+
+```sh
+sqlite3 -readonly /var/local/cc.db "select p_titles_0_nominal, p_location from Entries where p_type='Entry:Item' limit 20"
+```
+
+**Python 3（KUAL 的 python3 扩展，装在 `/mnt/us/python3`）**
+
+它的动态库不在系统路径里，直接运行会找不到 `libpython3.9.so`，需要带上环境变量：
+
+```sh
+LD_LIBRARY_PATH=/mnt/us/python3/lib PYTHONIOENCODING=utf-8 /mnt/us/python3/bin/python3.9 脚本.py
+```
+
+可以写两个包装脚本省掉这些。
+
+`/mnt/us/python3/bin/python3`：
+
+```sh
+#!/bin/sh
+# Kindle 上的 python3 包装：自动带上库路径和 CA 证书
+export LD_LIBRARY_PATH=/mnt/us/python3/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export SSL_CERT_FILE=${SSL_CERT_FILE:-/mnt/us/python3/lib/python3.9/site-packages/certifi/cacert.pem}
+export PYTHONIOENCODING=${PYTHONIOENCODING:-utf-8}
+exec /mnt/us/python3/bin/python3.9 "$@"
+```
+
+`/mnt/us/python3/bin/pip`：
+
+```sh
+#!/bin/sh
+export PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1
+exec /mnt/us/python3/bin/python3 -m pip "$@"
+```
+
+- **装 pip**：`/mnt/us/python3/bin/python3 -m ensurepip`，再 `pip install certifi`。装完 certifi 后，HTTPS 才能验证证书。
+- **能装哪些包**：只有纯 Python 包，或者自带 armel 编译产物的包。numpy 这类没有软浮点 ARM 版本。
+- **想直接敲 `python3` / `pip`**：在 `/usr/local/bin/` 里放两个转发脚本。它们在系统分区，要先 `mntroot rw`，升级固件后会丢。
+- ⚠ **不要**把 `LD_LIBRARY_PATH=/mnt/us/python3/lib` 设成全局变量。系统自带的 `sqlite3` 等程序会加载到 Python 带的库，报 `SQLite header and source version mismatch`。
+
+**本项目的日志**
+
+```sh
+E=/mnt/us/extensions/kindletweaks
+sh $E/tweak.sh status                   # 所有功能的状态
+cat $E/tweak.log                        # 开关操作记录
+tail $E/foldercoll/sync.log             # 文件夹收藏夹
+tail $E/mangaconv/convert.log           # epub 转换
+grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁出错时
+```
 
 ## 升级 / 重刷固件之后
 

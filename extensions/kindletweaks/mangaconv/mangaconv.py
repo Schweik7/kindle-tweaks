@@ -5,11 +5,15 @@
 
     mangaconv.py convert <in.epub> [out.pdf]   转换一本（不管大小、不管充电）
     mangaconv.py scan                          列出待转换队列
-    mangaconv.py run [--force]                 处理队列；不带 --force 时只在充电时干活，拔电就停
+    mangaconv.py run [--force] [--dir 目录]     处理队列；不带 --force 时只在充电时干活，拔电就停；
+                                               --dir 只处理该目录里的 epub，不限大小、不等充电
     mangaconv.py status                        一行状态（给 KUAL 菜单用）
 
-队列 = documents 下 >= min_size_mb 的 .epub，且看起来是漫画（几乎每个 html 一张图、没什么文字），
-且旁边还没有同名 .pdf。转好后原 epub 按 config.json 的 after 处理（默认移到 archive_dir）。
+队列 = documents 下旁边还没有同名 pdf/mobi/azw3 的 .epub，按内容决定怎么转：
+  漫画（几乎每个 html 一张图、没什么文字）且 >= min_size_mb → PDF（kcc_lite 处理每页）；
+  文字书（任意大小）→ mobi（KindleGen 经 qemu-i386 运行，需要 ../bin/ 里的两个文件）；
+  小漫画 → 不自动转，留给菜单里「按目录转换」手动转 PDF。
+转好后原 epub 按 config.json 的 after 处理（默认移到 archive_dir）。
 """
 import io
 import json
@@ -45,6 +49,12 @@ DEFAULTS = {
     "cropping_power": 1.0,
     "splitter": 0,
     "upscale": True,
+    # 文字书 epub -> mobi：KindleGen（x86 静态版）经 qemu-i386 用户态模拟运行
+    "text_to_mobi": True,
+    "kindlegen": os.path.join(os.path.dirname(HERE), "bin", "kindlegen"),
+    "qemu": os.path.join(os.path.dirname(HERE), "bin", "qemu-i386-static"),
+    "kindlegen_compress": 0,
+    "kindlegen_timeout": 3600,
 }
 ON_KINDLE = os.path.exists("/usr/bin/lipc-get-prop")
 
@@ -299,11 +309,28 @@ def target_pdf(src):
     return os.path.splitext(src)[0] + ".pdf"
 
 
-def scan(conf, st):
-    """返回待转换的 epub 列表（按路径排序）。"""
+def target_mobi(src):
+    return os.path.splitext(src)[0] + ".mobi"
+
+
+def has_output(src):
+    """旁边已经有同名的 pdf/mobi/azw3，就不再转（也不会覆盖用户自己的文件）。"""
+    base = os.path.splitext(src)[0]
+    return any(os.path.exists(base + e) for e in (".pdf", ".mobi", ".azw3", ".azw"))
+
+
+def kindlegen_ready(conf):
+    return conf["text_to_mobi"] and all(os.path.isfile(conf[k]) for k in ("kindlegen", "qemu"))
+
+
+def scan(conf, st, only_dir=None):
+    """返回待转换的 epub 列表（按路径排序），具体转成什么在 _convert_queue 里看内容决定。
+    自动模式：>= min_size_mb 的都算；小的只在启用了 epub->mobi 时才算（小漫画会被标成 manual 留给手动）。
+    only_dir：只看这个目录（含子目录），不限大小，manual 的也转。"""
     out = []
     limit = conf["min_size_mb"] * 1024 * 1024
-    for root, dirs, files in os.walk(conf["documents"]):
+    mobi = kindlegen_ready(conf)
+    for root, dirs, files in os.walk(only_dir or conf["documents"]):
         dirs[:] = [d for d in dirs if not d.endswith(".sdr")]
         for f in files:
             if not f.lower().endswith(".epub"):
@@ -313,14 +340,54 @@ def scan(conf, st):
                 s = os.stat(p)
             except OSError:
                 continue
-            if s.st_size < limit or os.path.exists(target_pdf(p)):
+            if has_output(p):
+                continue
+            if not only_dir and s.st_size < limit and not mobi:
                 continue
             rec = st.get(p)
-            # 跳过 / 失败过的，文件没变就不再试
-            if rec and rec.get("size") == s.st_size and rec.get("mtime") == int(s.st_mtime) and rec["status"] in ("skipped", "failed"):
-                continue
+            # 跳过 / 失败过 / 等手动的，文件没变就不再试
+            if rec and rec.get("size") == s.st_size and rec.get("mtime") == int(s.st_mtime):
+                if rec["status"] in ("skipped", "failed") or (rec["status"] == "manual" and not only_dir):
+                    continue
             out.append(p)
     return sorted(out, key=natural_key)
+
+
+def to_mobi(src, dst, conf, keep_going=None):
+    """用 KindleGen（x86，经 qemu-i386 用户态模拟运行）把 epub 编译成 mobi（含 KF8）。"""
+    work = os.path.join(conf["tmp_dir"], "kindlegen")
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    ep = os.path.join(work, "book.epub")
+    shutil.copyfile(src, ep)
+    logf = os.path.join(work, "kindlegen.log")
+    # KindleGen 会把 epub 解压到 $TMPDIR，默认 /tmp 在内存里，改到 U 盘区
+    env = dict(os.environ, TMPDIR=work)
+    cmd = [conf["qemu"], conf["kindlegen"], ep, "-c%d" % conf["kindlegen_compress"], "-dont_append_source", "-o", "book.mobi"]
+    with open(logf, "w") as lf:
+        p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, cwd=work)
+    t0 = time.time()
+    try:
+        while p.poll() is None:
+            time.sleep(5)
+            if keep_going and not keep_going():
+                raise Aborted()
+            if time.time() - t0 > conf["kindlegen_timeout"]:
+                raise RuntimeError("kindlegen 超时（%d 秒）" % conf["kindlegen_timeout"])
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    out = os.path.join(work, "book.mobi")
+    # 返回码 0 成功、1 成功但有警告、2 失败
+    if p.returncode not in (0, 1) or not os.path.exists(out):
+        try:
+            errs = [l.strip() for l in open(logf, encoding="utf-8", errors="replace") if "Error" in l][-2:]
+        except OSError:
+            errs = []
+        raise RuntimeError("kindlegen rc=%s %s" % (p.returncode, " | ".join(errs)))
+    shutil.move(out, dst)
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def after_convert(src, conf):
@@ -337,8 +404,9 @@ def after_convert(src, conf):
     return "原 epub 保留"
 
 
-def run(force=False):
-    """返回码：0 队列已处理完；2 拔电中止；3 没在充电；4 已有一个在跑（后台任务据此决定下次是否重试）。"""
+def run(force=False, only_dir=None):
+    """返回码：0 队列已处理完；2 拔电中止；3 没在充电；4 已有一个在跑（后台任务据此决定下次是否重试）。
+    only_dir：手动指定目录（不限大小、不等充电）；有别的转换在跑就排队等它结束。"""
     import fcntl
     conf = load_conf()
     os.makedirs(conf["tmp_dir"], exist_ok=True)
@@ -346,13 +414,16 @@ def run(force=False):
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        return 4
-    return _run(conf, force)
+        if not only_dir:
+            return 4
+        set_status("排队中：等当前转换结束")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    return _run(conf, force or bool(only_dir), only_dir)
 
 
-def _run(conf, force):
+def _run(conf, force, only_dir=None):
     st = load_state()
-    queue = scan(conf, st)
+    queue = scan(conf, st, only_dir)
     if not queue:
         set_status("队列空")
         return 0
@@ -371,43 +442,60 @@ def _run(conf, force):
 
     blocker = SuspendBlocker()
     try:
-        return _convert_queue(conf, st, queue, keep_going)
+        return _convert_queue(conf, st, queue, keep_going, only_dir)
     finally:
         blocker.close()
 
 
-def _convert_queue(conf, st, queue, keep_going):
+def _convert_queue(conf, st, queue, keep_going, only_dir=None):
     done = 0
+    limit = conf["min_size_mb"] * 1024 * 1024
     for i, src in enumerate(queue):
         name = os.path.basename(src)
         s = os.stat(src)
         rec = {"size": s.st_size, "mtime": int(s.st_mtime)}
-        try:
-            book = Epub(src)
-            ok, why = book.is_manga()
-            if not ok:
-                rec.update(status="skipped", reason=why)
-                log("跳过 %s：%s" % (name, why))
-                st[src] = rec
-                save_state(st)
-                continue
-        except Exception as e:  # 坏文件
-            rec.update(status="failed", reason="打不开：%s" % e)
-            log("失败 %s：%s" % (name, rec["reason"]))
+
+        def remember(status, reason):
+            rec.update(status=status, reason=reason)
+            log("%s %s：%s" % ({"skipped": "跳过", "failed": "失败", "manual": "留给手动"}[status], name, reason))
             st[src] = rec
             save_state(st)
-            continue
-
-        dst = target_pdf(src)
-        work = os.path.join(conf["tmp_dir"], "current.pdf")
-        t0 = time.time()
-        log("开始 %s（%d 张图）" % (name, len(book.images)))
-
-        def progress(k, n, i=i):
-            set_status("转换中 %d/%d 本，第 %d/%d 页" % (i + 1, len(queue), k, n))
 
         try:
-            pages = convert(src, work, conf, keep_going, progress)
+            book = Epub(src)
+            manga, why = book.is_manga()
+        except Exception as e:  # 坏文件
+            remember("failed", "打不开：%s" % e)
+            continue
+        if manga and (s.st_size >= limit or only_dir):
+            kind = "pdf"
+        elif not manga and kindlegen_ready(conf):
+            kind = "mobi"
+        elif manga:
+            remember("manual", "小于 %d MB 的漫画，在菜单「按目录转换」里手动转 PDF" % conf["min_size_mb"])
+            continue
+        else:
+            remember("skipped", "%s；epub→mobi 未启用或缺 kindlegen" % why)
+            continue
+
+        t0 = time.time()
+        try:
+            if kind == "pdf":
+                dst = target_pdf(src)
+                work = os.path.join(conf["tmp_dir"], "current.pdf")
+                log("开始 %s -> PDF（%d 张图）" % (name, len(book.images)))
+
+                def progress(k, n, i=i):
+                    set_status("转换中 %d/%d 本，第 %d/%d 页" % (i + 1, len(queue), k, n))
+                pages = convert(src, work, conf, keep_going, progress)
+                # 写完整后才放进 documents，书库不会索引到半截文件
+                shutil.move(work, dst)
+                rec.update(pages=pages)
+            else:
+                dst = target_mobi(src)
+                log("开始 %s -> mobi（kindlegen）" % name)
+                set_status("转换中 %d/%d 本：%s -> mobi" % (i + 1, len(queue), name[:20]))
+                to_mobi(src, dst, conf, keep_going)
         except Aborted:
             log("已拔电，中止 %s，下次充电重新开始" % name)
             set_status("已暂停（拔电），%d 本待转" % (len(queue) - done))
@@ -418,20 +506,15 @@ def _convert_queue(conf, st, queue, keep_going):
             set_status("读写出错已中止，%d 本待转" % (len(queue) - done))
             return 2
         except Exception as e:
-            rec.update(status="failed", reason=repr(e))
-            log("失败 %s：%r" % (name, e))
-            st[src] = rec
-            save_state(st)
+            remember("failed", repr(e))
             continue
-        # 写完整后才放进 documents，书库不会索引到半截文件
-        shutil.move(work, dst)
         msg = after_convert(src, conf)
-        rec.update(status="done", pdf=dst, pages=pages, seconds=int(time.time() - t0),
-                   pdf_mb=round(os.path.getsize(dst) / 1048576, 1))
+        rec.update(status="done", out=dst, seconds=int(time.time() - t0),
+                   out_mb=round(os.path.getsize(dst) / 1048576, 1))
         st[src] = rec
         save_state(st)
         done += 1
-        log("完成 %s -> %d 页，%.1f MB，用时 %d 秒；%s" % (name, pages, rec["pdf_mb"], rec["seconds"], msg))
+        log("完成 %s -> %s，%.1f MB，用时 %d 秒；%s" % (name, os.path.basename(dst), rec["out_mb"], rec["seconds"], msg))
     set_status("完成，本轮转了 %d 本" % done)
     return 0
 
@@ -452,7 +535,8 @@ def main(argv):
         for p in scan(load_conf(), load_state()):
             print(p)
     elif argv[:1] == ["run"]:
-        sys.exit(run(force="--force" in argv))
+        d = argv[argv.index("--dir") + 1] if "--dir" in argv else None
+        sys.exit(run(force="--force" in argv, only_dir=d))
     elif argv[:1] == ["status"]:
         try:
             print(open(STATUS, encoding="utf-8").read())
