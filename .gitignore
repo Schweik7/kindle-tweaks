@@ -9,3 +9,5 @@
 state.json
 sync.log*
 __pycache__/
+tweak.log
+menu.json.new

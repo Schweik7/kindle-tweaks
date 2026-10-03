@@ -41,13 +41,13 @@ ssh root@<kindle-ip> "cat /etc/prettyversion.txt; md5sum /app/KPPMainApp/js/KPPM
 scp root@<kindle-ip>:/app/KPPMainApp/js/KPPMainApp.js.hbc KPPMainApp.js.hbc.orig
 ```
 
-⚠ 确认拿到的是**原版**。如果以前打过补丁，先 `restore.sh`。
+⚠ 确认拿到的是**原版**。如果以前打过补丁，先在 KUAL 里把这项「关闭（还原原版）」。
 
 ### 2. 生成补丁（自动）
 
 ```sh
 pip install git+https://github.com/P1sec/hermes-dec
-python patches/kpp_patch/patch_kpp.py KPPMainApp.js.hbc.orig KPPMainApp.js.hbc.patched
+python tools/patch_kpp.py KPPMainApp.js.hbc.orig KPPMainApp.js.hbc.patched
 ```
 
 这个脚本会：
@@ -76,8 +76,8 @@ hbc-decompiler   KPPMainApp.js.hbc.orig dec.js
 ```sh
 ssh root@<kindle-ip>
 export PATH=/usr/sbin:/sbin:$PATH
-mkdir -p /mnt/us/kpp_patch      # 先用 scp 把 .orig / .patched 传进去
-mount --bind /mnt/us/kpp_patch/KPPMainApp.js.hbc.patched /app/KPPMainApp/js/KPPMainApp.js.hbc
+# 先用 scp 把 .orig / .patched 传到 /mnt/us/extensions/kindletweaks/files/
+mount --bind /mnt/us/extensions/kindletweaks/files/KPPMainApp.js.hbc.patched /app/KPPMainApp/js/KPPMainApp.js.hbc
 restart kppmainapp
 ```
 
@@ -87,24 +87,23 @@ restart kppmainapp
 
 ### 4. 永久写入
 
+KUAL →「Kindle Tweaks」→「去除「云端不可用」弹窗」→「开启」。也可以用 SSH：
+
 ```sh
-scp patches/kpp_patch/apply.sh patches/kpp_patch/restore.sh root@<kindle-ip>:/mnt/us/kpp_patch/
-ssh root@<kindle-ip> sh /mnt/us/kpp_patch/apply.sh
+ssh root@<kindle-ip> sh /mnt/us/extensions/kindletweaks/tweak.sh popup on    # off = 还原
 ```
 
-`apply.sh` 处理 `PAIRS` 里列出的每个文件，步骤如下：
+`tweak.sh` 对每个文件的处理步骤：
 
-1. 解除 bind mount。
-2. 核对系统里的文件 md5 是否等于 `.orig`，不等就跳过。
+1. 解除临时试用留下的 bind mount。
+2. 核对系统里的文件 md5 是否等于 `.orig` 或 `.patched`，都不等就整组不动（固件变了）。
 3. `mntroot rw`。
 4. 先复制成 `.new`，再用 `mv` 原子替换。
 5. `mntroot ro`。
 6. 校验 md5。
 7. `restart kppmainapp`。
 
-`restore.sh` 的流程相同，方向相反。
-
-两个脚本都不写死 md5，而是和 `kpp_patch/` 里的 `.orig` / `.patched` 比对。换了固件以后，只需要换掉这两个文件。
+脚本不写死 md5，而是和 `files/` 里的 `.orig` / `.patched` 比对。换了固件以后，只需要换掉这两个文件。
 
 ## 没有 SSH 时
 

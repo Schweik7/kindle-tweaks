@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <extension>
 	<information>
-		<name>文件夹收藏夹</name>
-		<version>1.0</version>
+		<name>Kindle Tweaks</name>
+		<version>2.0</version>
 		<author>schweik7</author>
-		<id>foldercoll</id>
+		<id>kindletweaks</id>
 	</information>
 	<menus>
 		<menu type="json" dynamic="true">menu.json</menu>

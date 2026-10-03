@@ -1,8 +1,8 @@
 # kindle-tweaks
 
-让越狱 Kindle 更好用的一组小改造，主要针对**未注册 / fakereg 假注册**的机器。
+让越狱 Kindle 更好用的一组小改造，主要针对**未注册 / fakereg 假注册**的机器。所有功能集中在一个 KUAL 菜单「Kindle Tweaks」里，可以单独开关。
 
-*A collection of tweaks for jailbroken Kindles (especially unregistered / fake-registered ones): remove the "cloud unavailable" nag, auto-build collections from folders, and unlock the Collections view. Docs are in Chinese; scripts are self-explanatory.*
+*A collection of tweaks for jailbroken Kindles (especially unregistered / fake-registered ones), managed from a single KUAL menu: remove the "cloud unavailable" nag, auto-build collections from folders, unlock the Collections view, and full-screen PDF (no footer, no margins). Docs are in Chinese; scripts are self-explanatory.*
 
 > 验证设备：Kindle Oasis 3（10th gen），FW **5.15.1.1**，LanguageBreak 越狱 + KUAL + [fakereg](https://www.mobileread.com/forums/showpost.php?p=4122357&postcount=125)。
 > 其他机型和固件的原理大概率相同，但偏移和特征码可能不同。脚本都会先校验，不匹配就不动。
@@ -14,17 +14,35 @@
 | 1 | 去掉「云端不可用」弹窗 | 假注册后每次进书库都弹「云端不可用，您必须注册 kindle…」 | [docs/01-cloud-popup.md](docs/01-cloud-popup.md) |
 | 2 | 文件夹 → 收藏夹自动同步 | Kindle 不认文件夹；未注册时「新建收藏夹」是灰色的 | [docs/02-folder-collections.md](docs/02-folder-collections.md) |
 | 3 | 解锁「查看选项 → 收藏夹」视图 | 收藏夹里的书仍在书库第一层平铺；该视图在未注册时是灰色的 | [docs/03-collections-view.md](docs/03-collections-view.md) |
+| 4 | PDF 全屏 | PDF 底部常驻阅读百分比、四周有白边，设置里关不掉 | [docs/04-pdf-fullscreen.md](docs/04-pdf-fullscreen.md) |
+| 5 | 屏保开机随机排序开关 | linkss 开机时重排所有屏保，图多时开机很慢 | （菜单里直接切换） |
 
-后续还会加入更多功能。
+## KUAL 菜单
+
+```
+Kindle Tweaks
+├─ 去除「云端不可用」弹窗 [已开启]   → 开启 / 关闭（还原原版）
+├─ 解锁「查看选项→收藏夹」 [已开启] → 开启 / 关闭（还原原版）
+├─ PDF 全屏（无底栏无边距） [已开启] → 开启 / 关闭（还原原版）
+├─ 文件夹收藏夹 [自动同步已开启]     → 立即同步 / 开启自动同步 / 关闭自动同步 / 删除所有自动生成的收藏夹
+├─ 屏保开机随机排序（linkss） [已关闭] → 开启 / 关闭
+├─ 升级固件后：全部补丁重新开启
+└─ 全部补丁还原原版
+```
+
+菜单项里的 `[状态]` 是按系统文件实际的 md5 算出来的，每次操作后自动刷新。缺补丁文件的功能会显示「缺补丁文件」，不影响其他功能。
 
 ## 目录
 
 ```
-patches/kpp_patch/          系统文件补丁（1、3）
-  patch_kpp.py              在电脑上生成 KPPMainApp.js.hbc 的补丁版（需要 hermes-dec）
-  patch_ksdk.py             在电脑上生成 libKSDKLibrary.so 的补丁版（纯 Python）
-  apply.sh / restore.sh     在 Kindle 上安装 / 还原（校验 md5，原子替换，重启书库进程）
-extensions/foldercoll/      KUAL 扩展：文件夹 → 收藏夹（2）
+extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensions/ 下
+  tweak.sh                  所有开关的实现（KUAL 和 SSH 共用），生成 menu.json
+  foldercoll/               文件夹 → 收藏夹（sync.py + upstart 任务模板）
+  files/                    补丁用的系统文件 *.orig / *.patched（自己生成，不进 git）
+tools/                      在电脑上生成 .patched
+  patch_kpp.py              KPPMainApp.js.hbc（功能 1，需要 hermes-dec）
+  patch_ksdk.py             libKSDKLibrary.so（功能 3，纯 Python）
+  pdf_fullscreen/build.py   3 个 Java jar（功能 4，需要 JDK 9+）
 docs/                       原理、排查过程、新固件上怎么重做
 ```
 
@@ -37,51 +55,52 @@ docs/                       原理、排查过程、新固件上怎么重做
   - [USBNetwork](https://www.mobileread.com/forums/showthread.php?t=225030) 开启 SSH over WiFi（推荐，下文用 `ssh root@<kindle-ip>`）。
   - hotfix 自带的 `;log runme`：在书库搜索栏输入，会以 root 执行根目录的 `RUNME.sh`。
 - 功能 2 需要 Kindle 上有 Python 3（例如 KUAL 的 python3 扩展，装在 `/mnt/us/python3`）。
-- 功能 1 需要电脑上装 [hermes-dec](https://github.com/P1sec/hermes-dec)：`pip install git+https://github.com/P1sec/hermes-dec`。
+- 生成补丁需要电脑上有 Python 3；功能 1 还要 [hermes-dec](https://github.com/P1sec/hermes-dec)（`pip install git+https://github.com/P1sec/hermes-dec`），功能 4 还要 JDK 9+。
 
 ## 快速开始
 
-### 补丁（功能 1 + 3）
-
 ```sh
+# 0. 装扩展
+scp -r extensions/kindletweaks root@<kindle-ip>:/mnt/us/extensions/
+F=/mnt/us/extensions/kindletweaks/files
+
 # 1. 从 Kindle 提取原始文件
 scp root@<kindle-ip>:/app/KPPMainApp/js/KPPMainApp.js.hbc KPPMainApp.js.hbc.orig
 scp root@<kindle-ip>:/app/lib/libKSDKLibrary.so          libKSDKLibrary.so.orig
+scp -r root@<kindle-ip>:/opt/amazon/ebook/lib            ebook-lib
 
-# 2. 在电脑上生成补丁版
-python patches/kpp_patch/patch_kpp.py   KPPMainApp.js.hbc.orig KPPMainApp.js.hbc.patched
-python patches/kpp_patch/patch_ksdk.py  libKSDKLibrary.so.orig libKSDKLibrary.so.patched
+# 2. 在电脑上生成补丁版（需要哪个功能就生成哪个）
+python tools/patch_kpp.py  KPPMainApp.js.hbc.orig KPPMainApp.js.hbc.patched
+python tools/patch_ksdk.py libKSDKLibrary.so.orig libKSDKLibrary.so.patched
+python tools/pdf_fullscreen/build.py ebook-lib pdf-out     # 生成 3 对 jar 的 .orig/.patched
 
-# 3. 传到 Kindle 的 /mnt/us/kpp_patch/ 并安装
-ssh root@<kindle-ip> mkdir -p /mnt/us/kpp_patch
-scp *.orig *.patched patches/kpp_patch/apply.sh patches/kpp_patch/restore.sh root@<kindle-ip>:/mnt/us/kpp_patch/
-ssh root@<kindle-ip> sh /mnt/us/kpp_patch/apply.sh
+# 3. 传到扩展的 files/
+scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 ```
 
-- 想还原：`ssh root@<kindle-ip> sh /mnt/us/kpp_patch/restore.sh`。
-- 第一次用建议先临时试用（bind mount，重启即失效），见各功能文档。
+然后打开 KUAL →「Kindle Tweaks」→「首次使用：刷新状态」，菜单就会列出全部功能。
 
-### 文件夹收藏夹（功能 2）
-
-1. 把 `extensions/foldercoll/` 拷到 Kindle 的 `extensions/` 下。
-2. 打开 KUAL →「文件夹收藏夹」，先点「立即同步」，再点「开启自动同步（开机自启）」。
-3. 之后 `documents/` 下的每个文件夹都会成为同名收藏夹。增删书、改文件夹名，大约 1～2 分钟内收藏夹会自动跟着变。
+- 建议每个补丁第一次用时先临时试用（bind mount，重启即失效），方法见各功能文档。
+- SSH 等价命令：`sh /mnt/us/extensions/kindletweaks/tweak.sh status`、`tweak.sh pdffull on`、`tweak.sh all off` 等。不带参数运行会显示用法。
 
 ## 升级 / 重刷固件之后
 
-系统分区会被整个替换，所以补丁和自动同步的开机任务都会失效。处理方法：
+系统分区会被整个替换，所以补丁和自动同步的开机任务都会失效。`extensions/kindletweaks/` 在用户分区，不受影响。
 
-- **固件版本不变**：执行 `apply.sh`，再在 KUAL 里重新「开启自动同步」。
-- **固件版本变了**：`apply.sh` 会因为 md5 对不上而跳过。用新固件的文件重新跑 `patch_*.py` 生成补丁版；如果脚本找不到特征，按 docs 里的手动方法重新定位。
+- **固件版本不变**：KUAL →「升级固件后：全部补丁重新开启」，再在「文件夹收藏夹」里重新「开启自动同步」。
+- **固件版本变了**：菜单里会显示「文件不匹配」，脚本不会写入。
+  1. 用新固件的文件重新生成 `.orig` / `.patched`。
+  2. 如果生成脚本找不到特征，按 docs 里的手动方法重新定位。
 
 ## 风险与救砖
 
-改的是书库界面程序。万一改坏，可能出现白屏：
+补丁改的是书库界面程序（功能 1、3）和 Java 阅读器框架（功能 4）。万一改坏，可能出现白屏：
 
 - **临时试用阶段**：长按电源键约 40 秒强制重启，自动恢复。
 - **已永久写入**：
-  - 能 SSH 就执行 `restore.sh`（usbnet 的 SSH 不依赖界面）。
+  - 能 SSH 就执行 `sh /mnt/us/extensions/kindletweaks/tweak.sh all off`。usbnet 的 SSH 不依赖界面，白屏时一样能连。
   - 不能 SSH 就重刷同版本官方固件（书不会丢）。
+- 白屏也可能只是 framework 重启后停在了 KUAL 的空白页，见 [docs/04 第 6 节](docs/04-pdf-fullscreen.md#6-排错笔记)。
 
 请自行承担风险。
 
@@ -90,7 +109,7 @@ ssh root@<kindle-ip> sh /mnt/us/kpp_patch/apply.sh
 - [LibrarianSync](https://github.com/NiLuJe/librariansync)：ccat `/change` 接口与 AuthToken。
 - [kindle-auto-collections](https://github.com/poketjomon/kindle-auto-collections)：cc.db 结构。
 - MobileRead [t=357149](https://www.mobileread.com/forums/showthread.php?t=357149)：「云端不可用」弹窗的来源分析。
-- [hermes-dec](https://github.com/P1sec/hermes-dec)。
+- [hermes-dec](https://github.com/P1sec/hermes-dec)、[CFR](https://www.benf.org/other/cfr/)。
 
 ## License
 

@@ -2,7 +2,7 @@
 
 > 验证：Kindle Oasis 3，FW 5.15.1.1，越狱 + fakereg 假注册。
 > 效果：`documents` 下的每个文件夹自动变成一个同名收藏夹，文件夹里的书自动加入。增删书、改文件夹名，大约 1～2 分钟内收藏夹会跟着变。
-> 代码：[`extensions/foldercoll/`](../extensions/foldercoll/)。
+> 代码：[`extensions/kindletweaks/foldercoll/`](../extensions/kindletweaks/foldercoll/)，菜单和开关在 [`tweak.sh`](../extensions/kindletweaks/tweak.sh)。
 
 ---
 
@@ -86,19 +86,22 @@ AuthToken: <文件 /tmp/session_token 的内容>
 
 ---
 
-## 4. 实现：KUAL 扩展 `foldercoll`
+## 4. 实现：KUAL 扩展 `kindletweaks` 里的 `foldercoll/`
+
+KUAL →「Kindle Tweaks」→「文件夹收藏夹」：立即同步 / 开启自动同步 / 关闭自动同步 / 删除所有自动生成的收藏夹。
 
 ```
-extensions/foldercoll/
-├─ config.xml / menu.json   KUAL 菜单：立即同步 / 开启自动同步 / 关闭自动同步 / 删除所有自动生成的收藏夹
-├─ config.json              配置（见下）
-├─ sync.py                  同步逻辑（用 Kindle 上的 /mnt/us/python3）
-├─ run.sh                   执行一次同步，日志追加到 sync.log（超过 200KB 自动轮换）
-├─ foldercoll.conf          upstart 任务模板（开机自启）
-├─ auto_on.sh / auto_off.sh 把 foldercoll.conf 装进 /etc/upstart/，或者移除
-├─ state.json               记录「本工具创建的收藏夹名 → uuid」
-└─ sync.log                 日志
+extensions/kindletweaks/
+├─ tweak.sh                 菜单动作都调用它：tweak.sh coll sync|on|off|purge
+└─ foldercoll/
+   ├─ config.json           配置（见下）
+   ├─ sync.py               同步逻辑（用 Kindle 上的 /mnt/us/python3）
+   ├─ foldercoll.conf       upstart 任务模板（开机自启），coll on/off 把它装进 /etc/upstart/ 或移除
+   ├─ state.json            记录「本工具创建的收藏夹名 → uuid」
+   └─ sync.log              日志（超过 200KB 自动轮换）
 ```
+
+> 从 1.x 的独立扩展 `extensions/foldercoll/` 升级：把旧目录里的 `config.json`、`state.json` 拷进 `kindletweaks/foldercoll/`，删掉旧扩展，再在菜单里「开启自动同步」一次（会用新路径覆盖 upstart 任务）。
 
 ### 4.1 配置 `config.json`
 
@@ -128,7 +131,7 @@ extensions/foldercoll/
 ### 4.3 自动同步：upstart 任务 `foldercoll`
 
 - 任务文件在 `/etc/upstart/foldercoll.conf`（系统分区），`start on started framework`，开机自启。
-- 循环逻辑：开机后等 90 秒，之后每 60 秒检查一次。用系统自带的 `sqlite3` 查出所有书的路径和所有收藏夹的 uuid，算 md5 当作签名；签名变了才调用 `run.sh` 同步。平时只多一条很轻的 SQL 查询，几乎不耗电。
+- 循环逻辑：开机后等 90 秒，之后每 60 秒检查一次。用系统自带的 `sqlite3` 查出所有书的路径和所有收藏夹的 uuid，算 md5 当作签名；签名变了才调用 `tweak.sh coll autosync` 同步（不在屏幕上打提示）。平时只多一条很轻的 SQL 查询，几乎不耗电。
 - 循环本身写在系统分区的任务文件里，Python 只在需要时才启动。USB 连电脑时 `/mnt/us` 被卸载，这一轮会失败，但签名不会更新，下一轮自动重试。
 - 实测：把文件夹改名后，大约 80 秒收藏夹就跟着更新了。
 
@@ -136,10 +139,10 @@ extensions/foldercoll/
 
 ```sh
 ssh root@<kindle-ip>
-sh /mnt/us/extensions/foldercoll/run.sh            # 立即同步
-sh /mnt/us/extensions/foldercoll/run.sh --purge    # 删除所有自动生成的收藏夹
-LD_LIBRARY_PATH=/mnt/us/python3/lib /mnt/us/python3/bin/python3.9 /mnt/us/extensions/foldercoll/sync.py --dry   # 只预览，不修改
-tail /mnt/us/extensions/foldercoll/sync.log        # 看日志
+sh /mnt/us/extensions/kindletweaks/tweak.sh coll sync     # 立即同步
+sh /mnt/us/extensions/kindletweaks/tweak.sh coll purge    # 删除所有自动生成的收藏夹
+LD_LIBRARY_PATH=/mnt/us/python3/lib /mnt/us/python3/bin/python3.9 /mnt/us/extensions/kindletweaks/foldercoll/sync.py --dry   # 只预览，不修改
+tail /mnt/us/extensions/kindletweaks/foldercoll/sync.log  # 看日志
 status foldercoll                                  # 看自动同步是否在运行（需要先 export PATH=/usr/sbin:/sbin:$PATH）
 sqlite3 /var/local/cc.db "select p_titles_0_nominal, p_memberCount from Entries where p_type='Collection'"
 ```
@@ -156,9 +159,9 @@ sqlite3 /var/local/cc.db "select p_titles_0_nominal, p_memberCount from Entries 
 
 ## 6. 升级固件之后
 
-- `/etc/upstart/foldercoll.conf` 在系统分区，**升级或重刷后会被清掉**，到时在 KUAL →「文件夹收藏夹」→「开启自动同步」再装一次即可。
+- `/etc/upstart/foldercoll.conf` 在系统分区，**升级或重刷后会被清掉**，到时在 KUAL →「Kindle Tweaks」→「文件夹收藏夹」→「开启自动同步」再装一次即可。
 - 「收藏夹」视图补丁见 [03-collections-view.md](03-collections-view.md)。
-- `extensions/foldercoll/`、已有的收藏夹（存在 `/var/local`）都不受影响。
+- `extensions/kindletweaks/`、已有的收藏夹（存在 `/var/local`）都不受影响。
 - 如果新固件的接口又改了（比如再次返回 401），按第 3 节的思路排查：
   1. 看 `/etc/upstart/system.conf` 里 token 是怎么生成的。
   2. 用 curl 测接口。

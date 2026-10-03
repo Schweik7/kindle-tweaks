@@ -1,6 +1,6 @@
 # 03 解锁「查看选项 → 收藏夹」视图
 
-> 验证：Kindle Oasis 3，FW 5.15.1.1。补丁脚本：[`patches/kpp_patch/patch_ksdk.py`](../patches/kpp_patch/patch_ksdk.py)，会按特征码自动定位。配合 [02 文件夹收藏夹](02-folder-collections.md) 使用效果最好。
+> 验证：Kindle Oasis 3，FW 5.15.1.1。补丁脚本：[`tools/patch_ksdk.py`](../tools/patch_ksdk.py)，会按特征码自动定位。配合 [02 文件夹收藏夹](02-folder-collections.md) 使用效果最好。
 
 
 ## 1 问题
@@ -45,20 +45,19 @@
 
 ## 4 安装、还原
 
-这个补丁和「云端不可用」弹窗补丁共用 `kpp_patch/` 里的同一套脚本，`apply.sh` 会依次处理两个文件：
+KUAL →「Kindle Tweaks」→「解锁「查看选项→收藏夹」」→「开启 / 关闭（还原原版）」。SSH 等价命令：
 
 ```sh
-ssh root@<kindle-ip> sh /mnt/us/kpp_patch/apply.sh     # 安装（已是补丁版的会跳过）
-ssh root@<kindle-ip> sh /mnt/us/kpp_patch/restore.sh   # 全部还原
+ssh root@<kindle-ip> sh /mnt/us/extensions/kindletweaks/tweak.sh collview on    # off = 还原
 ```
 
-需要的文件：`kpp_patch/libKSDKLibrary.so.orig`、`libKSDKLibrary.so.patched`。用 `patch_ksdk.py` 从自己机器的 `.orig` 生成 `.patched`。
+需要的文件：`extensions/kindletweaks/files/libKSDKLibrary.so.orig`、`libKSDKLibrary.so.patched`。用 `tools/patch_ksdk.py` 从自己机器的 `.orig` 生成 `.patched`。
 
 建议先临时试用，再永久写入：
 
 ```sh
 export PATH=/usr/sbin:/sbin:$PATH
-mount --bind /mnt/us/kpp_patch/libKSDKLibrary.so.patched /app/lib/libKSDKLibrary.so
+mount --bind /mnt/us/extensions/kindletweaks/files/libKSDKLibrary.so.patched /app/lib/libKSDKLibrary.so
 restart kppmainapp      # 必须重启书库进程才会加载新的 .so；出问题长按电源键 40 秒重启即恢复
 grep libKSDKLibrary /proc/$(pidof KPPMainApp)/maps   # 设备号 00:13 = 正在用补丁版；fe:05 = 系统分区里的文件
 ```
@@ -69,7 +68,7 @@ grep libKSDKLibrary /proc/$(pidof KPPMainApp)/maps   # 设备号 00:13 = 正在�
 2. 用 IDA（或 Ghidra）打开，搜索字符串 `library_layout_mode_option.collections`，找到引用 `COLLECTIONS_OPTION` 的 `LibraryLayoutModeOptions` 和 `LibraryModeOptions` 两个函数。
 3. 在两个函数里找到给收藏夹选项算 isEnabled 的那次虚函数调用，确认调用的是 `HouseholdUtilsImpl::HasActiveProfile`（构造函数里看成员偏移，再看虚函数表），把那条 `BLX Rx` 改成 `MOVS R0,#1`（`01 20`）。
 4. 如果是 Thumb-2 的 4 字节 BL，就改成 `MOVS R0,#1; NOP` = `01 20 00 BF`。
-5. 按第 4 节先临时试用，确认没问题再放进 `kpp_patch/`，执行 `apply.sh`。
+5. 按第 4 节先临时试用，确认没问题再放进 `files/`，在 KUAL 里开启。
 
 ---
 

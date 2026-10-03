@@ -1,0 +1,11 @@
+{
+	"items": [
+	{
+		"name": "Kindle Tweaks",
+		"priority": 0,
+		"items": [
+			{"name": "首次使用：刷新状态", "priority": 1, "refresh": true, "exitmenu": false, "action": "/mnt/us/extensions/kindletweaks/tweak.sh", "params": "menu"}
+		]
+	}
+	]
+}
