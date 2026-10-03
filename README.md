@@ -15,7 +15,8 @@
 | 2 | 文件夹 → 收藏夹自动同步 | Kindle 不认文件夹；未注册时「新建收藏夹」是灰色的 | [docs/02-folder-collections.md](docs/02-folder-collections.md) |
 | 3 | 解锁「查看选项 → 收藏夹」视图 | 收藏夹里的书仍在书库第一层平铺；该视图在未注册时是灰色的 | [docs/03-collections-view.md](docs/03-collections-view.md) |
 | 4 | PDF 全屏 | PDF 底部常驻阅读百分比、四周有白边，设置里关不掉 | [docs/04-pdf-fullscreen.md](docs/04-pdf-fullscreen.md) |
-| 5 | 屏保开机随机排序开关 | linkss 开机时重排所有屏保，图多时开机很慢 | （菜单里直接切换） |
+| 5 | 大漫画 epub 充电时自动转 PDF | Kindle 打不开 epub；KCC 依赖的 KindleGen 只有 x86 版。在 Kindle 上用精简移植的 KCC 直接转成全屏 PDF | [docs/05-manga-convert.md](docs/05-manga-convert.md) |
+| 6 | 屏保开机随机排序开关 | linkss 开机时重排所有屏保，图多时开机很慢 | （菜单里直接切换） |
 
 ## KUAL 菜单
 
@@ -25,6 +26,8 @@ Kindle Tweaks
 ├─ 解锁「查看选项→收藏夹」 [已开启] → 开启 / 关闭（还原原版）
 ├─ PDF 全屏（无底栏无边距） [已开启] → 开启 / 关闭（还原原版）
 ├─ 文件夹收藏夹 [自动同步已开启]     → 立即同步 / 开启自动同步 / 关闭自动同步 / 删除所有自动生成的收藏夹
+├─ 大漫画 epub 转 PDF [充电自动转换已开启 · 转换中 1/2 本，第 57/197 页]
+│                                    → 开启 / 关闭自动转换 / 立即转换（不等充电）/ 刷新进度
 ├─ 屏保开机随机排序（linkss） [已关闭] → 开启 / 关闭
 ├─ 升级固件后：全部补丁重新开启
 └─ 全部补丁还原原版
@@ -38,6 +41,7 @@ Kindle Tweaks
 extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensions/ 下
   tweak.sh                  所有开关的实现（KUAL 和 SSH 共用），生成 menu.json
   foldercoll/               文件夹 → 收藏夹（sync.py + upstart 任务模板）
+  mangaconv/                漫画 epub → PDF（kcc_lite.py 移植自 KCC，mangaconv.py + upstart 任务模板）
   files/                    补丁用的系统文件 *.orig / *.patched（自己生成，不进 git）
 tools/                      在电脑上生成 .patched
   patch_kpp.py              KPPMainApp.js.hbc（功能 1，需要 hermes-dec）
@@ -54,7 +58,7 @@ docs/                       原理、排查过程、新固件上怎么重做
 - 能在 Kindle 上以 root 执行命令，二选一：
   - [USBNetwork](https://www.mobileread.com/forums/showthread.php?t=225030) 开启 SSH over WiFi（推荐，下文用 `ssh root@<kindle-ip>`）。
   - hotfix 自带的 `;log runme`：在书库搜索栏输入，会以 root 执行根目录的 `RUNME.sh`。
-- 功能 2 需要 Kindle 上有 Python 3（例如 KUAL 的 python3 扩展，装在 `/mnt/us/python3`）。
+- 功能 2、5 需要 Kindle 上有 Python 3（例如 KUAL 的 python3 扩展，装在 `/mnt/us/python3`，自带 Pillow）。
 - 生成补丁需要电脑上有 Python 3；功能 1 还要 [hermes-dec](https://github.com/P1sec/hermes-dec)（`pip install git+https://github.com/P1sec/hermes-dec`），功能 4 还要 JDK 9+。
 
 ## 快速开始
@@ -87,7 +91,7 @@ scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 
 系统分区会被整个替换，所以补丁和自动同步的开机任务都会失效。`extensions/kindletweaks/` 在用户分区，不受影响。
 
-- **固件版本不变**：KUAL →「升级固件后：全部补丁重新开启」，再在「文件夹收藏夹」里重新「开启自动同步」。
+- **固件版本不变**：KUAL →「升级固件后：全部补丁重新开启」，再在「文件夹收藏夹」里重新「开启自动同步」、在「大漫画 epub 转 PDF」里重新「开启」。
 - **固件版本变了**：菜单里会显示「文件不匹配」，脚本不会写入。
   1. 用新固件的文件重新生成 `.orig` / `.patched`。
   2. 如果生成脚本找不到特征，按 docs 里的手动方法重新定位。
@@ -110,7 +114,8 @@ scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 - [kindle-auto-collections](https://github.com/poketjomon/kindle-auto-collections)：cc.db 结构。
 - MobileRead [t=357149](https://www.mobileread.com/forums/showthread.php?t=357149)：「云端不可用」弹窗的来源分析。
 - [hermes-dec](https://github.com/P1sec/hermes-dec)、[CFR](https://www.benf.org/other/cfr/)。
+- [Kindle Comic Converter (KCC)](https://github.com/ciromattia/kcc)：`mangaconv/kcc_lite.py` 的裁边、去页码、跨页拆分算法移植自 KCC。
 
 ## License
 
-MIT
+GPL-3.0-or-later（见 [LICENSE](LICENSE)）。`kcc_lite.py` 移植自 KCC 的 GPLv3 代码，所以整个仓库从 MIT 改为 GPL。

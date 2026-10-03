@@ -11,3 +11,5 @@ sync.log*
 __pycache__/
 tweak.log
 menu.json.new
+status.txt
+convert.log*

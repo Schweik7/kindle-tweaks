@@ -1,0 +1,10 @@
+{
+ "min_size_mb": 50,
+ "after": "move",
+ "archive_dir": "/mnt/us/epub_converted",
+ "jpeg_quality": 80,
+ "cropping": 2,
+ "cropping_power": 1.0,
+ "splitter": 0,
+ "upscale": true
+}

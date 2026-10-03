@@ -5,6 +5,7 @@
 #   tweak.sh <popup|collview|pdffull|all> on|off   开关系统文件补丁
 #   tweak.sh coll sync|on|off|purge      文件夹收藏夹：立即同步 / 开机自动同步 / 关闭 / 删除生成的收藏夹
 #   tweak.sh ssrandom on|off             linkss 屏保开机随机排序
+#   tweak.sh manga on|off|now            大漫画 epub 转 PDF：充电时自动转换开关 / 立即转换
 # 补丁文件放在 files/：<系统文件名>.orig（本机原版）和 <系统文件名>.patched（电脑上生成）
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH
 EXT=/mnt/us/extensions/kindletweaks
@@ -149,6 +150,44 @@ coll() {
 	esac
 }
 
+# 漫画 epub -> PDF（mangaconv/）
+manga() {
+	M=${EXT}/mangaconv
+	# 环境变量只给 Python：系统自带的 sqlite3 等程序加载到 Python 的库会出错
+	PY="env LD_LIBRARY_PATH=/mnt/us/python3/lib PYTHONIOENCODING=utf-8 /mnt/us/python3/bin/python3.9 -u ${M}/mangaconv.py"
+	if [ -f ${M}/convert.log ] && [ "$(wc -c < ${M}/convert.log)" -gt 200000 ]; then mv ${M}/convert.log ${M}/convert.log.old; fi
+	case "$1" in
+		autorun)
+			# 后台任务调用：只在充电时干活，返回码给任务判断是否需要重试
+			${PY} run >> ${M}/convert.log 2>&1
+			return $?
+			;;
+		now)
+			# 不等充电，立即处理队列；脱离 KUAL 在后台跑
+			setsid sh -c "nice -n 19 ${PY} run --force >> ${M}/convert.log 2>&1" >/dev/null 2>&1 </dev/null &
+			say "manga: 已在后台开始转换"
+			;;
+		on)
+			mntroot rw
+			cp ${M}/mangaconv.conf /etc/upstart/mangaconv.conf
+			chmod 644 /etc/upstart/mangaconv.conf
+			mntroot ro
+			start mangaconv >/dev/null 2>&1
+			say "manga: auto convert on"
+			;;
+		off)
+			stop mangaconv >/dev/null 2>&1
+			mntroot rw
+			[ -f /etc/upstart/mangaconv.conf ] && mv /etc/upstart/mangaconv.conf /tmp/mangaconv.conf.disabled
+			mntroot ro
+			say "manga: auto convert off"
+			;;
+	esac
+}
+
+manga_state() { [ -f /etc/upstart/mangaconv.conf ] && echo on || echo off; }
+manga_status() { head -c 120 ${EXT}/mangaconv/status.txt 2>/dev/null | tr -d '"\\\n' || true; }
+
 ssrandom() {
 	L=/mnt/us/linkss
 	[ -d ${L} ] || { say "ssrandom: 没装 linkss"; return 1; }
@@ -207,7 +246,16 @@ EOF
 			{"name": "删除所有自动生成的收藏夹", "priority": 4, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "coll purge"}
 		]},
 EOF
-		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 5 "关闭（固定顺序，开机更快）"
+		ms=$(manga_status)
+		cat <<EOF
+		{"name": "大漫画 epub 转 PDF [充电自动转换$(label $(manga_state))${ms:+ · ${ms}}]", "priority": 5, "items": [
+			{"name": "开启：充电时自动转换", "priority": 1, "checked": $([ $(manga_state) = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga on"},
+			{"name": "关闭自动转换", "priority": 2, "checked": $([ $(manga_state) = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga off"},
+			{"name": "立即转换（不等充电）", "priority": 3, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga now"},
+			{"name": "刷新进度", "priority": 4, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"}
+		]},
+EOF
+		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 6 "关闭（固定顺序，开机更快）"
 		cat <<EOF
 		{"name": "升级固件后：全部补丁重新开启", "priority": 8, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
 		{"name": "全部补丁还原原版", "priority": 9, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
@@ -224,6 +272,7 @@ case "$1" in
 		for u in ${UNITS}; do echo "${u}: $(state ${u})"; done
 		echo "coll(auto): $(coll_state)"
 		echo "ssrandom: $(ss_state)"
+		echo "manga(auto): $(manga_state) $(manga_status)"
 		;;
 	menu)
 		menu
@@ -249,6 +298,13 @@ case "$1" in
 	ssrandom)
 		ssrandom $2
 		screen "kindle-tweaks: screensaver random $2"
+		menu
+		;;
+	manga)
+		manga $2
+		rc=$?
+		[ "$2" = autorun ] && exit ${rc}
+		screen "kindle-tweaks: manga convert $2"
 		menu
 		;;
 	*)
