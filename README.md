@@ -89,11 +89,37 @@ scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 
 ## SSH 常用命令
 
-通过 USBNetwork 的 SSH 登录后（`ssh root@<kindle-ip>`），非交互执行时先补全 PATH：
+### 先读：Kindle 上的 Linux 和普通 Linux 不一样的地方
 
-```sh
-export PATH=/usr/sbin:/sbin:$PATH          # 非交互 ssh 默认 PATH 里没有 lipc-*、mntroot、start/stop 等
-```
+- **怎么开 SSH**：用 [USBNetwork](https://www.mobileread.com/forums/showthread.php?t=225030)（KUAL 的 MRInstaller 装）。
+  - 在 U 盘区的 `usbnet/etc/config` 里设 `USE_WIFI="true"`、`USE_WIFI_SSHD_ONLY="true"`，表示只在 WiFi 上开 SSH，不把 USB 切成网卡。
+  - `usbnet/` 下放一个名为 `auto` 的空文件，开机就会自动启动 SSH。
+  - **公钥**放在 `usbnet/etc/authorized_keys`。它自带的 dropbear 读的是这个路径，不是 `~/.ssh`。
+  - **密码登录**用 root 密码。没设过可以用 `passwd` 设，或者改 `/etc/shadow`。它在系统分区，升级固件后会被还原。
+- **IP 地址**：在路由器里看，或者 SSH 上去后执行 `ifconfig wlan0`。建议在路由器里给它固定 IP。
+- **休眠时连不上**：Kindle 进屏保约 1 分钟后深度休眠，WiFi 会断。按一下电源键唤醒就能连。调试期间可以用 `lipc-set-prop com.lab126.powerd preventScreenSaver 1` 禁止进屏保，用完改回 0。
+- **PATH 不全**：非交互的 `ssh root@<ip> '命令'` 找不到 `lipc-*`、`mntroot`、`start`/`stop` 等命令。先执行：
+  ```sh
+  export PATH=/usr/sbin:/sbin:$PATH
+  ```
+- **两个分区**：
+  - `/` 是系统分区，平时只读。要改的话先 `mntroot rw`，改完 `mntroot ro`。升级或重刷固件会整个替换它。
+  - `/mnt/us` 是用户分区，就是 USB 连电脑时看到的那个盘（vfat 类文件系统，没有符号链接和执行权限位）。书、扩展、自己的脚本都放这里，升级不会丢。
+  - 用 USB 存储模式连电脑时，`/mnt/us` 会被卸载，在上面跑的程序会出错。
+- **busybox 的坑**：
+  - 系统命令大多是 busybox 版，功能比 GNU 版少，比如 `find -size` 只认 `k`、不认 `M`。
+  - 变量后面紧跟中文时要写成 `${N}`，否则中文会被当成变量名的一部分。
+- **脚本必须 LF 换行**：在 Windows 上写的 `.sh` 如果是 CRLF，会出现莫名其妙的「not found」。拷上去后可以执行 `sed -i 's/\r$//' 脚本.sh`。
+- **改坏了怎么办**：
+  - 用 bind mount 临时试的改动：长按电源键约 40 秒强制重启，自动恢复。
+  - 写进系统分区的改动：只要 SSH 还能连就能救，usbnet 不依赖界面，白屏也能连。
+  - 实在不行，就重刷同版本官方固件，书不会丢。
+- **没有 SSH 时的替代**：在书库搜索栏输入 `;log runme`，会以 root 执行 U 盘区根目录的 `RUNME.sh`（需要 LanguageBreak 的 hotfix）。输出可以重定向到 `/mnt/us/xxx.log`，再通过 USB 查看。
+- **发现更多接口**：
+  - 系统服务之间通过 lipc 通信。`lipc-probe -l` 列出所有服务；`lipc-probe -v com.lab126.powerd` 列出某个服务的属性和当前值（r 可读 / w 可写）。`lipc-probe -a` 会探测全部服务，输出很长。
+  - 系统日志在 `/var/log/messages`。
+
+### 常用命令
 
 **截屏**
 
