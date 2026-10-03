@@ -1,0 +1,14 @@
+{
+	"items": [
+	{
+		"name": "文件夹收藏夹",
+		"priority": 0,
+		"items": [
+			{"name": "立即同步", "priority": 1, "action": "/mnt/us/extensions/foldercoll/run.sh"},
+			{"name": "开启自动同步（开机自启）", "priority": 2, "action": "/mnt/us/extensions/foldercoll/auto_on.sh"},
+			{"name": "关闭自动同步", "priority": 3, "action": "/mnt/us/extensions/foldercoll/auto_off.sh"},
+			{"name": "删除所有自动生成的收藏夹", "priority": 4, "action": "/mnt/us/extensions/foldercoll/run.sh", "params": "--purge"}
+		]
+	}
+	]
+}

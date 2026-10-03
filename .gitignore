@@ -1,0 +1,11 @@
+# 不要提交亚马逊的原始/补丁文件
+*.hbc
+*.so
+*.orig
+*.patched
+*.jar
+*.mo
+# 运行时产物
+state.json
+sync.log*
+__pycache__/
