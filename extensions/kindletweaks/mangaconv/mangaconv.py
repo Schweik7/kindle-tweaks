@@ -412,6 +412,11 @@ def _convert_queue(conf, st, queue, keep_going):
             log("已拔电，中止 %s，下次充电重新开始" % name)
             set_status("已暂停（拔电），%d 本待转" % (len(queue) - done))
             return 2
+        except OSError as e:
+            # 多半是切到了 USB 存储模式、/mnt/us 被卸载：不记失败，下次重来
+            log("读写出错，中止 %s：%r" % (name, e))
+            set_status("读写出错已中止，%d 本待转" % (len(queue) - done))
+            return 2
         except Exception as e:
             rec.update(status="failed", reason=repr(e))
             log("失败 %s：%r" % (name, e))
