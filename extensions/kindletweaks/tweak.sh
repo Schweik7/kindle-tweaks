@@ -5,8 +5,10 @@
 #   tweak.sh <popup|collview|pdffull|all> on|off   开关系统文件补丁
 #   tweak.sh coll sync|on|off|purge      文件夹收藏夹：立即同步 / 开机自动同步 / 关闭 / 删除生成的收藏夹
 #   tweak.sh ssrandom on|off             linkss 屏保开机随机排序
-#   tweak.sh manga on|off|now            epub 自动转换（大漫画→PDF，文字书→mobi）：充电时自动转换开关 / 立即转换
+#   tweak.sh manga on|off|now            epub 自动转换（大漫画充电→PDF，文字书传完→AZW3）：自动转换开关 / 立即转换
 #   tweak.sh manga dir <序号>            按目录转换（序号是菜单生成时 mangaconv/dirs.txt 的行号）
+#   tweak.sh debugawake always|charging|off   调试模式：始终阻止 / 仅充电阻止 / 关闭深度休眠推迟
+#   tweak.sh libraryview on|off          主界面重载时默认进入收藏夹视图
 # 补丁文件放在 files/：<系统文件名>.orig（本机原版）和 <系统文件名>.patched（电脑上生成）
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH
 EXT=/mnt/us/extensions/kindletweaks
@@ -151,7 +153,7 @@ coll() {
 	esac
 }
 
-# 漫画 epub -> PDF（mangaconv/）
+# epub -> PDF/AZW3（mangaconv/）
 manga() {
 	M=${EXT}/mangaconv
 	# 环境变量只给 Python：系统自带的 sqlite3 等程序加载到 Python 的库会出错
@@ -159,7 +161,7 @@ manga() {
 	if [ -f ${M}/convert.log ] && [ "$(wc -c < ${M}/convert.log)" -gt 200000 ]; then mv ${M}/convert.log ${M}/convert.log.old; fi
 	case "$1" in
 		autorun)
-			# 后台任务调用：只在充电时干活，返回码给任务判断是否需要重试
+			# 后台任务调用：文字书随时转、漫画等充电；返回码给任务判断是否需要重试
 			${PY} run >> ${M}/convert.log 2>&1
 			return $?
 			;;
@@ -196,12 +198,12 @@ manga() {
 manga_state() { [ -f /etc/upstart/mangaconv.conf ] && echo on || echo off; }
 manga_min() { sed -n 's/.*"min_size_mb"[^0-9]*\([0-9]*\).*/\1/p' ${EXT}/mangaconv/config.json 2>/dev/null | head -1; }
 
-# 含 epub（且旁边还没有同名 pdf）的目录 -> KUAL 菜单项；序号对应 dirs.txt 的行号
+# 含 epub（且旁边还没有同名输出）的目录 -> KUAL 菜单项；序号对应 dirs.txt 的行号
 manga_dir_items() {
 	M=${EXT}/mangaconv
 	find /mnt/us/documents -name "*.epub" 2>/dev/null | while read -r f; do
 		b=${f%.*}
-		[ -f "${b}.pdf" ] || [ -f "${b}.mobi" ] || [ -f "${b}.azw3" ] || echo "${f%/*}"
+		[ -f "${b}.pdf" ] || [ -f "${b}.mobi" ] || [ -f "${b}.azw3" ] || [ -f "${b}.azw" ] || echo "${f%/*}"
 	done | sort | uniq -c > ${M}/dirs.count
 	sed 's/^ *[0-9]* //' ${M}/dirs.count > ${M}/dirs.txt
 	n=0
@@ -221,6 +223,22 @@ manga_dir_items() {
 }
 manga_status() { head -c 120 ${EXT}/mangaconv/status.txt 2>/dev/null | tr -d '"\\\n' || true; }
 
+text_backend_label() {
+	b=false
+	k=false
+	[ -f ${EXT}/bin/boko ] && b=true
+	[ -f ${EXT}/bin/kindling-cli ] && k=true
+	if ${b} && ${k}; then
+		echo "boko→Kindling 回退"
+	elif ${b}; then
+		echo "boko（缺 Kindling 回退）"
+	elif ${k}; then
+		echo "Kindling（缺 boko）"
+	else
+		echo "缺 boko/Kindling"
+	fi
+}
+
 ssrandom() {
 	L=/mnt/us/linkss
 	[ -d ${L} ] || { say "ssrandom: 没装 linkss"; return 1; }
@@ -233,6 +251,105 @@ ssrandom() {
 
 coll_state() { [ -f /etc/upstart/foldercoll.conf ] && echo on || echo off; }
 ss_state() { [ -f /mnt/us/linkss/random ] && echo on || echo off; }
+
+debugawake() {
+	D=${EXT}/debugawake/kindletweaks-debugawake.conf
+	M=${EXT}/debugawake/mode
+	J=/etc/upstart/kindletweaks-debugawake.conf
+	case "$1" in
+		always | charging)
+			[ -f ${D} ] || { say "debugawake: 缺 ${D}"; return 1; }
+			echo "$1" > ${M}.new && mv ${M}.new ${M} || { say "debugawake: 写模式失败"; return 1; }
+			mntroot rw
+			cp ${D} ${J}
+			chmod 644 ${J}
+			mntroot ro
+			start kindletweaks-debugawake >/dev/null 2>&1 || true
+			say "debugawake: $1"
+			;;
+		off)
+			stop kindletweaks-debugawake >/dev/null 2>&1 || true
+			mntroot rw
+			[ -f ${J} ] && mv ${J} /tmp/kindletweaks-debugawake.conf.disabled
+			mntroot ro
+			rm -f ${M} ${M}.new
+			say "debugawake: off"
+			;;
+	esac
+}
+
+debugawake_state() {
+	[ -f /etc/upstart/kindletweaks-debugawake.conf ] || { echo off; return; }
+	m=$(cat ${EXT}/debugawake/mode 2>/dev/null)
+	case "${m}" in always | charging) echo "${m}" ;; *) echo charging ;; esac
+}
+
+debugawake_label() {
+	case "$(debugawake_state)" in
+		always) echo "不深度休眠" ;;
+		charging) echo "充电时不深度休眠" ;;
+		off) echo "已关闭" ;;
+	esac
+}
+
+debugawake_status() {
+	s=$(debugawake_state)
+	if [ "${s}" = charging ]; then
+		[ "$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)" = 1 ] && p="当前充电中" || p="当前未充电"
+		echo "充电时不深度休眠，${p}"
+	else
+		debugawake_label
+	fi
+}
+
+# Home 页固定使用封面网格；图书馆里的内容筛选也会切回 LIBRARY 模式。
+# 只校正顶层默认模式，不锁文件、不动排序/筛选，仍允许当前会话临时切换视图。
+libraryview_apply() {
+	C=/var/local/LIBRARY_CONFIG
+	N=${C}.kindletweaks.new
+	[ -f ${C} ] || return 1
+	grep -q '"library_mode_selected"[[:space:]]*:[[:space:]]*"COLLECTIONS"' ${C} 2>/dev/null && return 0
+	sed 's/"library_mode_selected"[[:space:]]*:[[:space:]]*"[^"]*"/"library_mode_selected":"COLLECTIONS"/' ${C} > ${N} || return 1
+	grep -q '"library_mode_selected":"COLLECTIONS"' ${N} || { rm -f ${N}; return 1; }
+	chown framework:javausers ${N}
+	chmod 664 ${N}
+	mv ${N} ${C}
+	return 10
+}
+
+libraryview() {
+	D=${EXT}/libraryview/kindletweaks-libraryview.conf
+	J=/etc/upstart/kindletweaks-libraryview.conf
+	case "$1" in
+		on)
+			[ -f ${D} ] || { say "libraryview: 缺 ${D}"; return 1; }
+			libraryview_apply
+			rc=$?
+			[ ${rc} = 0 ] || [ ${rc} = 10 ] || { say "libraryview: 无法更新 /var/local/LIBRARY_CONFIG"; return 1; }
+			stop kindletweaks-libraryview >/dev/null 2>&1 || true
+			mntroot rw
+			cp ${D} ${J}
+			chmod 644 ${J}
+			mntroot ro
+			start kindletweaks-libraryview >/dev/null 2>&1 || { say "libraryview: 无法启动监听任务"; return 1; }
+			say "libraryview: default collections on"
+			restart kppmainapp >/dev/null 2>&1 || true
+			;;
+		off)
+			stop kindletweaks-libraryview >/dev/null 2>&1 || true
+			mntroot rw
+			[ -f ${J} ] && mv ${J} /tmp/kindletweaks-libraryview.conf.disabled
+			mntroot ro
+			say "libraryview: default collections off"
+			;;
+		apply)
+			libraryview_apply
+			return $?
+			;;
+	esac
+}
+
+libraryview_state() { [ -f /etc/upstart/kindletweaks-libraryview.conf ] && echo on || echo off; }
 
 label() {
 	case "$1" in
@@ -283,10 +400,10 @@ EOF
 		cat <<EOF
 		{"name": "epub 自动转换 [$(label $(manga_state))]", "priority": 5, "items": [
 			{"name": "${ms:-还没运行过}（点此刷新）", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
-			{"name": "开启：充电时自动转换", "priority": 2, "checked": $([ $(manga_state) = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga on"},
+			{"name": "开启自动转换（文字书传完即转）", "priority": 2, "checked": $([ $(manga_state) = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga on"},
 			{"name": "关闭自动转换", "priority": 3, "checked": $([ $(manga_state) = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga off"},
 			{"name": "立即转换（不等充电）", "priority": 4, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga now"},
-			{"name": "规则：漫画≥$(manga_min)MB→PDF，文字书→mobi$([ -f ${EXT}/bin/kindlegen ] && [ -f ${EXT}/bin/qemu-i386-static ] || echo '（缺 kindlegen）')", "priority": 5, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "规则：漫画≥$(manga_min)MB充电→PDF，文字书传完→AZW3 [$(text_backend_label)]", "priority": 5, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
 			{"name": "按目录转换（不限大小）", "priority": 6, "items": [
 $(manga_dir_items)
 			]}
@@ -294,8 +411,18 @@ $(manga_dir_items)
 EOF
 		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 6 "关闭（固定顺序，开机更快）"
 		cat <<EOF
-		{"name": "升级固件后：全部补丁重新开启", "priority": 8, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
-		{"name": "全部补丁还原原版", "priority": 9, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
+		{"name": "默认收藏夹视图 [$(label $(libraryview_state))]", "priority": 7, "items": [
+			{"name": "开启（每次进入图书馆时校正）", "priority": 1, "checked": $([ "$(libraryview_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview on"},
+			{"name": "关闭（不再强制，保留当前视图）", "priority": 2, "checked": $([ "$(libraryview_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview off"}
+		]},
+		{"name": "调试模式 [$(debugawake_label)]", "priority": 8, "items": [
+			{"name": "查看当前状态：$(debugawake_status)（点此刷新）", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "不深度休眠", "priority": 2, "checked": $([ "$(debugawake_state)" = always ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake always"},
+			{"name": "充电时不深度休眠", "priority": 3, "checked": $([ "$(debugawake_state)" = charging ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake charging"},
+			{"name": "关闭调试模式", "priority": 4, "checked": $([ "$(debugawake_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake off"}
+		]},
+		{"name": "升级固件后：全部补丁重新开启", "priority": 9, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
+		{"name": "全部补丁还原原版", "priority": 10, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
 		]
 	}
 	]
@@ -310,6 +437,8 @@ case "$1" in
 		echo "coll(auto): $(coll_state)"
 		echo "ssrandom: $(ss_state)"
 		echo "manga(auto): $(manga_state) $(manga_status)"
+		echo "libraryview(default collections): $(libraryview_state)"
+		echo "debugawake: $(debugawake_status)"
 		;;
 	menu)
 		menu
@@ -335,6 +464,18 @@ case "$1" in
 	ssrandom)
 		ssrandom $2
 		screen "kindle-tweaks: screensaver random $2"
+		menu
+		;;
+	debugawake)
+		debugawake $2
+		screen "kindle-tweaks: debug awake $2"
+		menu
+		;;
+	libraryview)
+		libraryview $2
+		rc=$?
+		[ "$2" = apply ] && exit ${rc}
+		screen "kindle-tweaks: default collections $2"
 		menu
 		;;
 	manga)

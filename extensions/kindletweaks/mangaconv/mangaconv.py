@@ -5,17 +5,18 @@
 
     mangaconv.py convert <in.epub> [out.pdf]   转换一本（不管大小、不管充电）
     mangaconv.py scan                          列出待转换队列
-    mangaconv.py run [--force] [--dir 目录]     处理队列；不带 --force 时只在充电时干活，拔电就停；
+    mangaconv.py run [--force] [--dir 目录]     处理队列；文字书随时转换，漫画不带 --force 时只在充电时转换；
                                                --dir 只处理该目录里的 epub，不限大小、不等充电
     mangaconv.py status                        一行状态（给 KUAL 菜单用）
 
 队列 = documents 下旁边还没有同名 pdf/mobi/azw3 的 .epub，按内容决定怎么转：
   漫画（几乎每个 html 一张图、没什么文字）且 >= min_size_mb → PDF（kcc_lite 处理每页）；
-  文字书（任意大小）→ mobi（KindleGen 经 qemu-i386 运行，需要 ../bin/ 里的两个文件）；
+  文字书（任意大小）→ AZW3（boko；失败时自动回退 Kindling）；
   小漫画 → 不自动转，留给菜单里「按目录转换」手动转 PDF。
 转好后原 epub 按 config.json 的 after 处理（默认移到 archive_dir）。
 """
 import io
+import hashlib
 import json
 import os
 import posixpath
@@ -49,12 +50,11 @@ DEFAULTS = {
     "cropping_power": 1.0,
     "splitter": 0,
     "upscale": True,
-    # 文字书 epub -> mobi：KindleGen（x86 静态版）经 qemu-i386 用户态模拟运行
-    "text_to_mobi": True,
-    "kindlegen": os.path.join(os.path.dirname(HERE), "bin", "kindlegen"),
-    "qemu": os.path.join(os.path.dirname(HERE), "bin", "qemu-i386-static"),
-    "kindlegen_compress": 0,
-    "kindlegen_timeout": 3600,
+    # 文字书 epub -> azw3：原生 ARM boko；失败时回退原生 ARM Kindling
+    "text_to_azw3": True,
+    "boko": os.path.join(os.path.dirname(HERE), "bin", "boko"),
+    "kindling": os.path.join(os.path.dirname(HERE), "bin", "kindling-cli"),
+    "text_timeout": 1800,
 }
 ON_KINDLE = os.path.exists("/usr/bin/lipc-get-prop")
 
@@ -63,7 +63,11 @@ def load_conf():
     c = dict(DEFAULTS)
     try:
         with open(CONF, encoding="utf-8") as f:
-            c.update(json.load(f))
+            user = json.load(f)
+            c.update(user)
+            # 兼容旧配置里的总开关；KindleGen/qemu 路径不再使用。
+            if "text_to_azw3" not in user and "text_to_mobi" in user:
+                c["text_to_azw3"] = bool(user["text_to_mobi"])
     except (OSError, ValueError):
         pass
     return c
@@ -172,6 +176,9 @@ class Epub:
     def read(self, name):
         return self.z.read(name)
 
+    def close(self):
+        self.z.close()
+
 
 # ---------------------------------------------------------------- PDF
 
@@ -259,7 +266,9 @@ def convert(src, dst, conf, keep_going=None, progress=None):
         pdf.f.close()
         if os.path.exists(tmp):
             os.remove(tmp)
+        book.close()
         raise
+    book.close()
     os.replace(tmp, dst)
     return len(pdf.pages)
 
@@ -309,8 +318,8 @@ def target_pdf(src):
     return os.path.splitext(src)[0] + ".pdf"
 
 
-def target_mobi(src):
-    return os.path.splitext(src)[0] + ".mobi"
+def target_azw3(src):
+    return os.path.splitext(src)[0] + ".azw3"
 
 
 def has_output(src):
@@ -319,17 +328,24 @@ def has_output(src):
     return any(os.path.exists(base + e) for e in (".pdf", ".mobi", ".azw3", ".azw"))
 
 
-def kindlegen_ready(conf):
-    return conf["text_to_mobi"] and all(os.path.isfile(conf[k]) for k in ("kindlegen", "qemu"))
+def available_text_backends(conf):
+    """按优先级返回可用的文字书转换器。"""
+    if not conf["text_to_azw3"]:
+        return []
+    return [name for name in ("boko", "kindling") if os.path.isfile(conf[name])]
+
+
+def text_converter_ready(conf):
+    return bool(available_text_backends(conf))
 
 
 def scan(conf, st, only_dir=None):
     """返回待转换的 epub 列表（按路径排序），具体转成什么在 _convert_queue 里看内容决定。
-    自动模式：>= min_size_mb 的都算；小的只在启用了 epub->mobi 时才算（小漫画会被标成 manual 留给手动）。
+    自动模式：>= min_size_mb 的都算；小的只在启用了 epub->azw3 时才算（小漫画会被标成 manual 留给手动）。
     only_dir：只看这个目录（含子目录），不限大小，manual 的也转。"""
     out = []
     limit = conf["min_size_mb"] * 1024 * 1024
-    mobi = kindlegen_ready(conf)
+    text = text_converter_ready(conf)
     for root, dirs, files in os.walk(only_dir or conf["documents"]):
         dirs[:] = [d for d in dirs if not d.endswith(".sdr")]
         for f in files:
@@ -342,7 +358,7 @@ def scan(conf, st, only_dir=None):
                 continue
             if has_output(p):
                 continue
-            if not only_dir and s.st_size < limit and not mobi:
+            if not only_dir and s.st_size < limit and not text:
                 continue
             rec = st.get(p)
             # 跳过 / 失败过 / 等手动的，文件没变就不再试
@@ -353,41 +369,119 @@ def scan(conf, st, only_dir=None):
     return sorted(out, key=natural_key)
 
 
-def to_mobi(src, dst, conf, keep_going=None):
-    """用 KindleGen（x86，经 qemu-i386 用户态模拟运行）把 epub 编译成 mobi（含 KF8）。"""
-    work = os.path.join(conf["tmp_dir"], "kindlegen")
+def _valid_azw3(path):
+    """AZW3/MOBI 都是 PalmDB，文件头 60..67 应为 BOOKMOBI。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(68)
+        return len(head) == 68 and head[60:68] == b"BOOKMOBI"
+    except OSError:
+        return False
+
+
+def _personalize_boko_azw3(path, src):
+    """把 boko 0.5.0 的固定 ASIN 换成每本书稳定且唯一的 10 字符 ID。
+
+    boko 当前会给所有 AZW3 写入 EBOK000000，Kindle 因而把不同书视为相同
+    cdeKey，严重时内容数据库会拒绝后加入的书。等长替换 EXTH 113 的值不会
+    改变 PalmDB 的任何偏移。
+    """
+    digest = hashlib.sha256()
+    with open(src, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    content_id = digest.hexdigest()[:10].upper().encode("ascii")
+    placeholder = b"EBOK000000"
+    with open(path, "r+b") as f:
+        # EXTH 在第一个 PalmDB record；无需把图片很多的整本书读进内存。
+        head = f.read(256 * 1024)
+        pos = head.find(placeholder)
+        if pos < 0:
+            return None
+        if head.find(placeholder, pos + len(placeholder)) >= 0:
+            raise RuntimeError("boko 输出包含多个固定 ASIN，拒绝盲目修改")
+        f.seek(pos)
+        f.write(content_id)
+    return content_id.decode("ascii")
+
+
+def _log_tail(path, lines=3):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            nonempty = [line.strip() for line in f if line.strip()]
+        return " | ".join(nonempty[-lines:])
+    except OSError:
+        return ""
+
+
+def _run_text_backend(name, cmd, out, logf, env, work, timeout, keep_going):
+    """运行一个原生转换器；失败留给调用者决定是否回退。"""
+    started = time.time()
+    try:
+        with open(logf, "a", encoding="utf-8") as lf:
+            lf.write("\n=== %s ===\n" % name)
+            lf.flush()
+            p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, cwd=work)
+            try:
+                while p.poll() is None:
+                    time.sleep(1)
+                    if keep_going and not keep_going():
+                        raise Aborted()
+                    if time.time() - started > timeout:
+                        p.kill()
+                        p.wait()
+                        return False, "%s 超时（%d 秒）" % (name, timeout)
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+    except Aborted:
+        raise
+    except OSError as e:
+        return False, "%s 无法启动：%s" % (name, e)
+    if p.returncode != 0:
+        return False, "%s rc=%s：%s" % (name, p.returncode, _log_tail(logf))
+    if not _valid_azw3(out):
+        return False, "%s 未生成有效 AZW3：%s" % (name, _log_tail(logf))
+    return True, ""
+
+
+def to_azw3(src, dst, conf, keep_going=None):
+    """用 boko 把 epub 转成 AZW3；失败时自动回退 Kindling。返回实际使用的后端。"""
+    work = os.path.join(conf["tmp_dir"], "ebook-convert")
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     ep = os.path.join(work, "book.epub")
     shutil.copyfile(src, ep)
-    logf = os.path.join(work, "kindlegen.log")
-    # KindleGen 会把 epub 解压到 $TMPDIR，默认 /tmp 在内存里，改到 U 盘区
+    out = os.path.join(work, "book.azw3")
+    logf = os.path.join(work, "convert.log")
+    # 转换器会解包并生成中间文件，避免占用 Kindle 很小的内存文件系统 /tmp。
     env = dict(os.environ, TMPDIR=work)
-    cmd = [conf["qemu"], conf["kindlegen"], ep, "-c%d" % conf["kindlegen_compress"], "-dont_append_source", "-o", "book.mobi"]
-    with open(logf, "w") as lf:
-        p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, cwd=work)
-    t0 = time.time()
-    try:
-        while p.poll() is None:
-            time.sleep(5)
-            if keep_going and not keep_going():
-                raise Aborted()
-            if time.time() - t0 > conf["kindlegen_timeout"]:
-                raise RuntimeError("kindlegen 超时（%d 秒）" % conf["kindlegen_timeout"])
-    finally:
-        if p.poll() is None:
-            p.kill()
-            p.wait()
-    out = os.path.join(work, "book.mobi")
-    # 返回码 0 成功、1 成功但有警告、2 失败
-    if p.returncode not in (0, 1) or not os.path.exists(out):
-        try:
-            errs = [l.strip() for l in open(logf, encoding="utf-8", errors="replace") if "Error" in l][-2:]
-        except OSError:
-            errs = []
-        raise RuntimeError("kindlegen rc=%s %s" % (p.returncode, " | ".join(errs)))
-    shutil.move(out, dst)
-    shutil.rmtree(work, ignore_errors=True)
+    failures = []
+    for backend in available_text_backends(conf):
+        if os.path.exists(out):
+            os.remove(out)
+        if backend == "boko":
+            cmd = [conf["boko"], "convert", ep, out]
+        else:
+            cmd = [conf["kindling"], "build", ep, "-o", out,
+                   "--no-validate", "--no-embed-source", "--no-hd-images"]
+        ok, reason = _run_text_backend(backend, cmd, out, logf, env, work,
+                                       conf["text_timeout"], keep_going)
+        if ok:
+            if backend == "boko":
+                _personalize_boko_azw3(out, src)
+            shutil.move(out, dst)
+            shutil.rmtree(work, ignore_errors=True)
+            return backend
+        failures.append(reason)
+        log("%s，尝试下一个转换器" % reason)
+    if not failures:
+        failures.append("未启用文字书转换，或缺少 boko/Kindling")
+    raise RuntimeError("；".join(failures))
 
 
 def after_convert(src, conf):
@@ -405,7 +499,7 @@ def after_convert(src, conf):
 
 
 def run(force=False, only_dir=None):
-    """返回码：0 队列已处理完；2 拔电中止；3 没在充电；4 已有一个在跑（后台任务据此决定下次是否重试）。
+    """返回码：0 队列已处理完；2 拔电中止；3 有漫画等待充电；4 已有一个在跑（后台任务据此决定下次是否重试）。
     only_dir：手动指定目录（不限大小、不等充电）；有别的转换在跑就排队等它结束。"""
     import fcntl
     conf = load_conf()
@@ -427,13 +521,10 @@ def _run(conf, force, only_dir=None):
     if not queue:
         set_status("队列空")
         return 0
-    if not force and not charging():
-        set_status("等待充电（%d 本待转）" % len(queue))
-        return 3
     last_defer = [0.0]
 
-    def keep_going():
-        # 每分钟查一次是否还在充电
+    def keep_charging():
+        # 仅漫画 PDF 转换使用：每分钟查一次是否还在充电。
         if time.time() - last_defer[0] > 60:
             last_defer[0] = time.time()
             if not force and not charging():
@@ -442,13 +533,14 @@ def _run(conf, force, only_dir=None):
 
     blocker = SuspendBlocker()
     try:
-        return _convert_queue(conf, st, queue, keep_going, only_dir)
+        return _convert_queue(conf, st, queue, keep_charging, only_dir, force)
     finally:
         blocker.close()
 
 
-def _convert_queue(conf, st, queue, keep_going, only_dir=None):
+def _convert_queue(conf, st, queue, keep_charging, only_dir=None, force=False):
     done = 0
+    waiting_for_power = 0
     limit = conf["min_size_mb"] * 1024 * 1024
     for i, src in enumerate(queue):
         name = os.path.basename(src)
@@ -461,21 +553,32 @@ def _convert_queue(conf, st, queue, keep_going, only_dir=None):
             st[src] = rec
             save_state(st)
 
+        book = None
         try:
             book = Epub(src)
             manga, why = book.is_manga()
+            image_count = len(book.images)
+            book.close()
         except Exception as e:  # 坏文件
+            if book is not None:
+                book.close()
             remember("failed", "打不开：%s" % e)
             continue
         if manga and (s.st_size >= limit or only_dir):
             kind = "pdf"
-        elif not manga and kindlegen_ready(conf):
-            kind = "mobi"
+        elif not manga and text_converter_ready(conf):
+            kind = "azw3"
         elif manga:
             remember("manual", "小于 %d MB 的漫画，在菜单「按目录转换」里手动转 PDF" % conf["min_size_mb"])
             continue
         else:
-            remember("skipped", "%s；epub→mobi 未启用或缺 kindlegen" % why)
+            remember("skipped", "%s；epub→AZW3 未启用或缺 boko/Kindling" % why)
+            continue
+
+        # 文字书的原生转换很快，不要求充电；耗时的漫画 PDF 才等待电源。
+        if kind == "pdf" and not force and not charging():
+            waiting_for_power += 1
+            log("等待充电 %s -> PDF" % name)
             continue
 
         t0 = time.time()
@@ -483,19 +586,19 @@ def _convert_queue(conf, st, queue, keep_going, only_dir=None):
             if kind == "pdf":
                 dst = target_pdf(src)
                 work = os.path.join(conf["tmp_dir"], "current.pdf")
-                log("开始 %s -> PDF（%d 张图）" % (name, len(book.images)))
+                log("开始 %s -> PDF（%d 张图）" % (name, image_count))
 
                 def progress(k, n, i=i):
                     set_status("转换中 %d/%d 本，第 %d/%d 页" % (i + 1, len(queue), k, n))
-                pages = convert(src, work, conf, keep_going, progress)
+                pages = convert(src, work, conf, keep_charging, progress)
                 # 写完整后才放进 documents，书库不会索引到半截文件
                 shutil.move(work, dst)
                 rec.update(pages=pages)
             else:
-                dst = target_mobi(src)
-                log("开始 %s -> mobi（kindlegen）" % name)
-                set_status("转换中 %d/%d 本：%s -> mobi" % (i + 1, len(queue), name[:20]))
-                to_mobi(src, dst, conf, keep_going)
+                dst = target_azw3(src)
+                log("开始 %s -> AZW3（boko，失败回退 Kindling）" % name)
+                set_status("转换中 %d/%d 本：%s -> AZW3" % (i + 1, len(queue), name[:20]))
+                rec["backend"] = to_azw3(src, dst, conf)
         except Aborted:
             log("已拔电，中止 %s，下次充电重新开始" % name)
             set_status("已暂停（拔电），%d 本待转" % (len(queue) - done))
@@ -515,6 +618,9 @@ def _convert_queue(conf, st, queue, keep_going, only_dir=None):
         save_state(st)
         done += 1
         log("完成 %s -> %s，%.1f MB，用时 %d 秒；%s" % (name, os.path.basename(dst), rec["out_mb"], rec["seconds"], msg))
+    if waiting_for_power:
+        set_status("文字书已处理，%d 本漫画等待充电" % waiting_for_power)
+        return 3
     set_status("完成，本轮转了 %d 本" % done)
     return 0
 
@@ -527,6 +633,7 @@ def main(argv):
         book = Epub(src)
         log("%s | 标题 %s | 作者 %s | rtl=%s | %d 张图 | 漫画判断 %s" %
             (os.path.basename(src), book.title, book.author, book.rtl, len(book.images), book.is_manga()))
+        book.close()
         t0 = time.time()
         pages = convert(src, dst, conf, progress=lambda k, n: print("\r%d/%d" % (k, n), end="", flush=True))
         print()

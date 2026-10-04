@@ -1,14 +1,14 @@
-# 05 epub 自动转换：大漫画 → PDF，文字书 → mobi
+# 05 epub 自动转换：大漫画 → PDF，文字书 → AZW3
 
-导入 epub 后，充电时自动按内容决定怎么转：
+导入 epub 后，文件传输完成便按内容决定怎么转：
 
 | epub 类型 | 转成 | 工具 |
 |---|---|---|
-| 漫画（几乎每页一张图）且 ≥ `min_size_mb`（默认 50 MB） | 全屏 PDF | `kcc_lite.py`（KCC 精简移植），见第 1–5 节 |
-| 文字书（任意大小） | mobi（含 KF8，排版和 azw3 一样） | KindleGen 经 qemu 在 Kindle 上运行，见第 7 节 |
+| 漫画（几乎每页一张图）且 ≥ `min_size_mb`（默认 50 MB） | 充电时转全屏 PDF | `kcc_lite.py`（KCC 精简移植），见第 1–5 节 |
+| 文字书（任意大小） | 传输完成立即转 AZW3（KF8），不要求充电 | 原生 ARM boko；失败时自动回退 Kindling，见第 7 节 |
 | 小于 `min_size_mb` 的漫画 | 不自动转 | 在菜单「按目录转换（不限大小）」里选目录，手动转 PDF |
 
-旁边已有同名 `.pdf` / `.mobi` / `.azw3` 的 epub 一律不转。
+旁边已有同名 `.pdf` / `.mobi` / `.azw3` / `.azw` 的 epub 一律不转。
 
 > 验证：Kindle Oasis 3，FW 5.15.1.1，KUAL python3（Python 3.9 + Pillow 9.0）。代码：[`extensions/kindletweaks/mangaconv/`](../extensions/kindletweaks/mangaconv/)。
 > 配合 [04 PDF 全屏](04-pdf-fullscreen.md) 使用：转出来的 PDF 每页正好一屏，阅读器里 1:1 全屏显示。
@@ -16,7 +16,7 @@
 ## 1 为什么
 
 - Kindle 自己打不开 epub。漫画 epub 通常要在电脑上用 KCC 转成 mobi/azw3 再拷进去。
-- KCC 的 mobi 输出依赖 KindleGen，而 KindleGen 只有 x86 版，Kindle 上跑不了。
+- KCC 的 mobi 输出依赖已经停止维护的 KindleGen；在 32 位 ARM Kindle 上没有原生版本。
 - PDF 不需要 KindleGen。每页一张 JPEG 原样嵌进去就是合法的 PDF。去掉底栏和边距之后（功能 4），看漫画的体验和 mobi 差不多，翻页速度也一致。
 - 所以思路是：在 Kindle 上解开 epub，用 KCC 的算法处理每一页，直接写成 PDF。
 
@@ -28,8 +28,10 @@
 |---|---|
 | `kcc_lite.py` | KCC `image.py` / `page_number_crop_alg.py` 的精简移植（GPLv3）。功能：去白边、去页码、跨页拆分/旋转、自动对比度、缩放并补边到屏幕分辨率。 |
 | `mangaconv.py` | 解析 epub 阅读顺序、判断是不是漫画、边处理边写 PDF；队列、状态、拔电中止、转换期间防休眠 |
-| `mangaconv.conf` | upstart 任务：充电时每分钟检查一次队列 |
+| `mangaconv.conf` | upstart 任务：每 30 秒检查文件是否传输完成，文字书随时转、漫画等充电 |
 | `config.json` | 配置（见第 4 节） |
+| `../bin/boko` | 文字书 epub → AZW3 的主转换器（原生 ARM 静态版） |
+| `../bin/kindling-cli` | boko 失败时的回退转换器（原生 ARM 静态版） |
 
 移植时的改动：
 - **去掉 numpy**：Kindle 是 armel，pip 上没有能用的 numpy。
@@ -57,9 +59,10 @@
 
 ## 3 什么时候转
 
-- 后台任务 `mangaconv` 每分钟查一次 `lipc-get-prop com.lab126.powerd isCharging`。只有在充电时才继续往下检查。
-- 充电时先用 `find -size +10240k` 粗筛大于 10 MB 的 epub 列表。列表签名没变、而且上一轮已经处理完，就不再启动 Python。平时几乎不耗电。
-- 转换过程中每分钟确认一次还在充电，拔电就中止（删掉半成品）。下次充电时这本从头开始。
+- 后台任务 `mangaconv` 每 30 秒计算一次 epub 列表签名（路径、大小、时间）。连续两次签名相同才启动 Python，所以 scp 还在写入的半截文件不会被误判为坏书；USB 模式下则在弹出设备、`/mnt/us` 重新挂载后处理。
+- **文字书不检查充电状态**：传输完成后等待一次稳定确认，通常 30–60 秒内开始转换。转换器是原生 ARM 程序，通常只需数秒。
+- **自动漫画转换仍要求充电**：未充电时只标记为等待；接上电源后电源状态令队列签名变化，自动开始。转换过程中每分钟确认一次仍在充电，拔电就删掉半成品并暂停。
+- 列表、电源和配置签名没变且上一轮已处理后，不再启动 Python；平时只有一次轻量 `find` 和电源查询。
 - 进程用 `nice -n 19` + `ionice -c 3`，不影响翻页。
 - **防休眠**：
   - 进入屏保一段时间后，powerd 会发 `readyToSuspend` 事件，然后深度休眠，CPU 会停。
@@ -69,9 +72,9 @@
 KUAL 菜单：「Kindle Tweaks」→「epub 自动转换」
 
 - 第一行显示进度，比如「转换中 1/3 本，第 57/197 页」，点它就刷新。
-- **开启：充电时自动转换** / **关闭自动转换**：安装或移除 `/etc/upstart/mangaconv.conf`。升级固件后需要重新开启。
+- **开启自动转换（文字书传完即转）** / **关闭自动转换**：安装或移除 `/etc/upstart/mangaconv.conf`。升级固件后需要重新开启。
 - **立即转换（不等充电）**：后台处理一次队列，不检查充电。
-- **规则：…**：显示当前规则；缺 KindleGen 时会标「缺 kindlegen」。
+- **规则：…**：显示当前规则和可用后端，如「boko→Kindling 回退」或「缺 boko/Kindling」。
 - **按目录转换（不限大小）**：
   - 列出 documents 里所有含待转换 epub 的目录和本数，选一个就在后台转那个目录（含子目录），不限大小、不等充电。
   - 如果别的转换正在进行，会排队，等它结束再开始。
@@ -89,6 +92,10 @@ KUAL 菜单：「Kindle Tweaks」→「epub 自动转换」
 | `cropping_power` | 1.0 | 裁切力度 0~3，越大越敢裁 |
 | `splitter` | 0 | 跨页：0 拆成两页（特别宽的旋转），1 只旋转，2 两种都要 |
 | `upscale` | true | 小图放大到一屏 |
+| `text_to_azw3` | true | 是否自动转换文字书；可在配置里显式关闭 |
+| `boko` | `../bin/boko` | boko 路径 |
+| `kindling` | `../bin/kindling-cli` | Kindling CLI 路径 |
+| `text_timeout` | 1800 | 单个转换器的超时秒数；boko 超时后仍会尝试 Kindling |
 
 ## 5 实测（Oasis 3）
 
@@ -110,31 +117,47 @@ cat $E/mangaconv/state.json                   # 每本书的结果（done / skip
 LD_LIBRARY_PATH=/mnt/us/python3/lib /mnt/us/python3/bin/python3.9 $E/mangaconv/mangaconv.py scan   # 看队列
 ```
 
-## 7 文字书 epub → mobi：KindleGen + qemu
+## 7 文字书 epub → AZW3：boko + Kindling fallback
 
-**为什么不像 calibre 那样直接转**：格式转换本身不难，难在运行环境。
+**为什么不直接搬 calibre**：格式转换本身不难，难在运行环境。
 - epub 是 zip 包里的 HTML/CSS/图片，azw3（KF8）是把差不多的内容装进亚马逊的 PalmDB 二进制容器。
 - calibre 的转换流程依赖 lxml、html5-parser、css-parser 等一堆 C 扩展。它官方只有 x86 / arm64 版本，而 Kindle 是 32 位 armel 软浮点、glibc 2.20、可用内存约 200 MB，装不上。
+- 抽取 calibre 的转换器还会带出它的 OEB 文档模型、CSS/HTML 清理流水线、元数据和 MOBI writer；维护成本明显高于使用专门的 Rust 实现。
 
-**做法**：
-- 亚马逊官方编译器 KindleGen 2.9 的 Linux 版是**静态链接的 x86 程序**。
-- Debian 的 `qemu-user-static`（armel）里的 `qemu-i386-static` 也是静态链接的，可以在 ARM 上逐条翻译执行 x86 指令。
-- 两个文件放进 `extensions/kindletweaks/bin/`，执行 `qemu-i386-static kindlegen book.epub` 就行，不用移植任何代码。
-- 下载：`python tools/fetch_kindlegen.py <目录>`。KindleGen 亚马逊已停止分发，脚本从 archive.org 下载；本仓库不包含这两个二进制。
+现在的方案完全不使用 qemu：
 
-**参数和细节**：
-- `-c0`：不压缩，比 `-c1` 快得多，体积稍大。
-- `-dont_append_source`：不把原 epub 附在 mobi 末尾，否则体积翻倍。
-- KindleGen 会把 epub 解压到 `$TMPDIR`。默认的 `/tmp` 在内存里，所以把它设成 U 盘区的工作目录。
-- 返回码：0 成功；1 成功但有警告（很常见，比如封面 HTML 被忽略）；2 失败。失败时把日志里的 Error 行记进 `state.json`。
-- 输出 `.mobi` 同时含 KF7 和 KF8，Kindle 用 KF8 渲染，效果和 azw3 一样。书库里显示 epub 元数据里的书名。
+1. 优先调用 [boko](https://github.com/zacharydenton/boko)。它对 Kindle 元数据处理更完整，速度和内存占用也更好。
+2. boko 0.5.0 会给所有 AZW3 写入固定 ASIN `EBOK000000`，多本书导入 Kindle 后会共享 `cdeKey`，甚至令内容数据库拒绝后续写入。因此转换后把这个 EXTH 值等长替换为原 EPUB 的 SHA-256 前 10 位；同一本书 ID 稳定，不同书不会冲突，也不改变 PalmDB 偏移。
+3. boko 启动失败、返回非零、超时或生成的文件没有合法 `BOOKMOBI` 头时，自动调用 [Kindling](https://github.com/CuteLicense/kindling-epub-to-mobi)。
+4. 只有两个后端都失败才把该书记为 `failed`；成功时在 `state.json` 的 `backend` 字段记录实际使用者。
+5. 输出先写在 `/mnt/us/.kindletweaks_tmp/ebook-convert/`，校验完整后再移到 epub 旁边，命名为同名 `.azw3`。
 
-**实测**：
-- 《神经漫游者》（5.3 MB epub）用 `-c1`、并且和漫画转换同时跑：675 秒，输出 11.7 MB（含附带的源文件）。
-- 正式参数（`-c0 -dont_append_source`）、单独运行：613 秒，输出 6.3 MB。瓶颈是 qemu 模拟，不是压缩。普通小说大约 10 分钟一本，适合充电时在后台转。
-- KindleGen 在 qemu 下约占 18 MB 内存。
+### 构建与安装
+
+电脑装好 rustup 和 Rust 1.91+ 后，在仓库根目录运行：
+
+```sh
+python tools/build_ebook_converters.py extensions/kindletweaks/bin
+scp extensions/kindletweaks/bin/boko extensions/kindletweaks/bin/kindling-cli \
+  root@<kindle-ip>:/mnt/us/extensions/kindletweaks/bin/
+```
+
+脚本固定到实测过的源码提交，自动添加 `armv7-unknown-linux-musleabi` target，并使用 Rust 自带的 `rust-lld`。产物是 ARMv7、静态链接、soft-float ELF，不依赖 Kindle 陈旧的 glibc，也不需要交叉 GCC。Windows 可直接构建；需要 Linux 时建议用 WSL Arch。源码版本与许可证见 [third-party.md](third-party.md)。
+
+### Oasis 3 实测
+
+同一本 459,174 字节的 Standard Ebooks《Epictetus》epub，在 Kindle Oasis 3 上转换：
+
+| 后端 | release 二进制 | 用时 | 峰值 RSS | AZW3 输出 |
+|---|---:|---:|---:|---:|
+| boko 0.5.0 | 4,937,504 B（4.71 MiB） | 0.26 s | 12.5 MB | 514,859 B |
+| Kindling 0.27.0 | 10,821,184 B（10.32 MiB） | 3.35 s | 47.4 MB | 551,497 B |
+
+构建脚本对 release 产物剥离符号并使用 `panic=abort`，两个二进制合计 15.03 MiB。两份输出都在 Kindle 上生成成功，并通过 calibre 解析和往返转换；boko 输出的元数据更完整，因此作为主路径。
+
+另用 8 本中文书做了实机导入回归：大义觉迷录、西域四百年、骑鹅旅行记、贞德两次审判记录、猎人笔记、唐诗鉴赏辞典、漫长的余生、百年战争。8/8 由 boko 转换并进入 Oasis 3 内容库，calibre 解析 8/8 成功；强制 boko 返回失败时 Kindling 回退也成功。图片较多的《漫长的余生》用时 4 秒（输出 8.6 MB），有 219 张图的《百年战争》用时 35 秒（输出 20.4 MB），两本都因正文密度足够而正确识别为文字书。
 
 ## 8 杂项
 
 - 想重新转某本被跳过或失败的书：从 `state.json` 里删掉它那一条，或者改一下文件（mtime 变了就会重试）。
-- 已经有同名 `.pdf` 的 epub 不会转，不会覆盖你自己的 PDF。
+- 已经有同名 `.pdf` / `.mobi` / `.azw3` / `.azw` 的 epub 不会转，不会覆盖你自己的文件。

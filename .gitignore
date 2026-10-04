@@ -13,7 +13,8 @@ tweak.log
 menu.json.new
 status.txt
 convert.log*
-# KindleGen / qemu 二进制（用 tools/fetch_kindlegen.py 下载）
+# boko / Kindling ARM 二进制（用 tools/build_ebook_converters.py 构建）
 extensions/kindletweaks/bin/
 dirs.txt
 dirs.count
+extensions/kindletweaks/debugawake/mode

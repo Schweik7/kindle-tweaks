@@ -15,8 +15,10 @@
 | 2 | 文件夹 → 收藏夹自动同步 | Kindle 不认文件夹；未注册时「新建收藏夹」是灰色的 | [docs/02-folder-collections.md](docs/02-folder-collections.md) |
 | 3 | 解锁「查看选项 → 收藏夹」视图 | 收藏夹里的书仍在书库第一层平铺；该视图在未注册时是灰色的 | [docs/03-collections-view.md](docs/03-collections-view.md) |
 | 4 | PDF 全屏 | PDF 底部常驻阅读百分比、四周有白边，设置里关不掉 | [docs/04-pdf-fullscreen.md](docs/04-pdf-fullscreen.md) |
-| 5 | epub 充电时自动转换 | Kindle 打不开 epub。大漫画用精简移植的 KCC 转成全屏 PDF；文字书用 KindleGen（经 qemu 在 Kindle 上运行）转成 mobi；小漫画可按目录手动转 | [docs/05-manga-convert.md](docs/05-manga-convert.md) |
+| 5 | epub 自动转换 | Kindle 打不开 epub。文字书传输完成后立即用原生 ARM boko 转成 AZW3，失败时回退 Kindling；大漫画充电时用精简移植的 KCC 转成全屏 PDF | [docs/05-manga-convert.md](docs/05-manga-convert.md) |
 | 6 | 屏保开机随机排序开关 | linkss 开机时重排所有屏保，图多时开机很慢 | （菜单里直接切换） |
+| 7 | 调试模式 | Kindle 进入深度休眠会断开 Wi-Fi/SSH；可选始终不深度休眠、仅充电时不深度休眠或关闭，屏保始终照常 | [docs/06-debug-awake.md](docs/06-debug-awake.md) |
+| 8 | 默认收藏夹视图 | Home 固定网格、图书馆筛选等操作会让界面回到「全部 + 网格」；每次进入图书馆时自动恢复收藏夹视图 | [docs/07-default-collections.md](docs/07-default-collections.md) |
 
 ## KUAL 菜单
 
@@ -28,6 +30,8 @@ Kindle Tweaks
 ├─ 文件夹收藏夹 [自动同步已开启]     → 立即同步 / 开启自动同步 / 关闭自动同步 / 删除所有自动生成的收藏夹
 ├─ epub 自动转换 [已开启]           → 进度 / 开启 / 关闭 / 立即转换 / 规则 / 按目录转换（动态列出目录）
 ├─ 屏保开机随机排序（linkss） [已关闭] → 开启 / 关闭
+├─ 默认收藏夹视图 [已开启]             → 开启 / 关闭（保留当前视图）
+├─ 调试模式 [已关闭]                   → 查看当前状态 / 不深度休眠 / 充电时不深度休眠 / 关闭调试模式
 ├─ 升级固件后：全部补丁重新开启
 └─ 全部补丁还原原版
 ```
@@ -40,13 +44,15 @@ Kindle Tweaks
 extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensions/ 下
   tweak.sh                  所有开关的实现（KUAL 和 SSH 共用），生成 menu.json
   foldercoll/               文件夹 → 收藏夹（sync.py + upstart 任务模板）
-  mangaconv/                漫画 epub → PDF（kcc_lite.py 移植自 KCC，mangaconv.py + upstart 任务模板）
+  mangaconv/                漫画 epub → PDF、文字书 epub → AZW3（mangaconv.py + upstart 任务模板）
+  debugawake/               调试模式：充电时推迟深度休眠的 upstart 任务模板
+  libraryview/              每次进入图书馆时恢复收藏夹视图的 upstart 任务模板
   files/                    补丁用的系统文件 *.orig / *.patched（自己生成，不进 git）
 tools/                      在电脑上生成 .patched
   patch_kpp.py              KPPMainApp.js.hbc（功能 1，需要 hermes-dec）
   patch_ksdk.py             libKSDKLibrary.so（功能 3，纯 Python）
   pdf_fullscreen/build.py   3 个 Java jar（功能 4，需要 JDK 9+）
-  fetch_kindlegen.py        下载 KindleGen + qemu-i386-static（功能 5 的 epub→mobi，拷到扩展的 bin/）
+  build_ebook_converters.py 从固定源码构建 boko + Kindling ARMv7 静态版（功能 5）
 docs/                       原理、排查过程、新固件上怎么重做
 ```
 
@@ -59,26 +65,29 @@ docs/                       原理、排查过程、新固件上怎么重做
   - [USBNetwork](https://www.mobileread.com/forums/showthread.php?t=225030) 开启 SSH over WiFi（推荐，下文用 `ssh root@<kindle-ip>`）。
   - hotfix 自带的 `;log runme`：在书库搜索栏输入，会以 root 执行根目录的 `RUNME.sh`。
 - 功能 2、5 需要 Kindle 上有 Python 3（例如 KUAL 的 python3 扩展，装在 `/mnt/us/python3`，自带 Pillow）。
-- 生成补丁需要电脑上有 Python 3；功能 1 还要 [hermes-dec](https://github.com/P1sec/hermes-dec)（`pip install git+https://github.com/P1sec/hermes-dec`），功能 4 还要 JDK 9+。
+- 生成补丁需要电脑上有 Python 3；功能 1 还要 [hermes-dec](https://github.com/P1sec/hermes-dec)（`pip install git+https://github.com/P1sec/hermes-dec`），功能 4 还要 JDK 9+；功能 5 的文字书转换器需要 rustup + Rust 1.91+ 构建一次。
 
 ## 快速开始
 
 ```sh
-# 0. 装扩展
+# 0. 如需文字书转换，先构建 Kindle 原生 ARM 转换器
+python tools/build_ebook_converters.py extensions/kindletweaks/bin
+
+# 1. 装扩展
 scp -r extensions/kindletweaks root@<kindle-ip>:/mnt/us/extensions/
 F=/mnt/us/extensions/kindletweaks/files
 
-# 1. 从 Kindle 提取原始文件
+# 2. 从 Kindle 提取原始文件
 scp root@<kindle-ip>:/app/KPPMainApp/js/KPPMainApp.js.hbc KPPMainApp.js.hbc.orig
 scp root@<kindle-ip>:/app/lib/libKSDKLibrary.so          libKSDKLibrary.so.orig
 scp -r root@<kindle-ip>:/opt/amazon/ebook/lib            ebook-lib
 
-# 2. 在电脑上生成补丁版（需要哪个功能就生成哪个）
+# 3. 在电脑上生成补丁版（需要哪个功能就生成哪个）
 python tools/patch_kpp.py  KPPMainApp.js.hbc.orig KPPMainApp.js.hbc.patched
 python tools/patch_ksdk.py libKSDKLibrary.so.orig libKSDKLibrary.so.patched
 python tools/pdf_fullscreen/build.py ebook-lib pdf-out     # 生成 3 对 jar 的 .orig/.patched
 
-# 3. 传到扩展的 files/
+# 4. 传到扩展的 files/
 scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 ```
 
@@ -127,6 +136,7 @@ scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 /mnt/us/usbnet/bin/fbgrab /tmp/shot.png    # 读 /dev/fb0，生成 PNG（1264×1680）
 scp root@<kindle-ip>:/tmp/shot.png .        # 在电脑上取回
 ```
+- /usr/sbin/screenshot 同样也可以进行截屏
 
 **打开书、回主页、电源**
 
