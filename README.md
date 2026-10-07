@@ -132,6 +132,7 @@ scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 - **发现更多接口**：
   - 系统服务之间通过 lipc 通信。`lipc-probe -l` 列出所有服务；`lipc-probe -v com.lab126.powerd` 列出某个服务的属性和当前值（r 可读 / w 可写）。`lipc-probe -a` 会探测全部服务，输出很长。
   - 系统日志在 `/var/log/messages`。
+  - 进程依赖、lipc 服务、appmgrd、关键文件、输入设备等系统内部知识见 [docs/09-lab126-internals.md](docs/09-lab126-internals.md)。
 
 ### 常用命令
 
