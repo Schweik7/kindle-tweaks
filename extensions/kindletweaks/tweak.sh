@@ -330,6 +330,30 @@ libraryview_apply() {
 	return 10
 }
 
+# 免重启切换：给 KPPMainApp 注入 libkt_libview.so（LD_PRELOAD），它在进入图书馆时调用原生 SetMode。
+# 改的是系统分区的 /etc/upstart/kppmainapp.conf 最后一行 exec，调用前须已 mntroot rw。
+LV_SO=${EXT}/libraryview/libkt_libview.so
+LV_FLAG=/tmp/kindletweaks-libraryview.reset
+KPP_JOB=/etc/upstart/kppmainapp.conf
+
+libraryview_preload() {
+	case "$1" in
+		on)
+			[ -f ${LV_SO} ] || return 1
+			grep -q "^exec env LD_PRELOAD=${LV_SO} /app/bin/KPPMainApp\$" ${KPP_JOB} && return 0
+			sed -i "s|^exec /app/bin/KPPMainApp\$|exec env LD_PRELOAD=${LV_SO} /app/bin/KPPMainApp|" ${KPP_JOB}
+			;;
+		off)
+			sed -i 's|^exec env LD_PRELOAD=[^ ]* /app/bin/KPPMainApp$|exec /app/bin/KPPMainApp|' ${KPP_JOB}
+			;;
+	esac
+	# upstart 0.6.6 没有 initctl，改了任务文件要发 SIGHUP 让它重读
+	kill -HUP 1
+}
+
+# 当前运行的 KPP 是否已加载注入库
+libraryview_injected() { grep -q libkt_libview /proc/$(pidof KPPMainApp 2>/dev/null)/maps 2>/dev/null; }
+
 libraryview() {
 	D=${EXT}/libraryview/kindletweaks-libraryview.conf
 	J=/etc/upstart/kindletweaks-libraryview.conf
@@ -343,6 +367,7 @@ libraryview() {
 			mntroot rw
 			cp ${D} ${J}
 			chmod 644 ${J}
+			libraryview_preload on || say "libraryview: 缺 ${LV_SO}，进入屏保时改用重载 KPP"
 			mntroot ro
 			start kindletweaks-libraryview >/dev/null 2>&1 || { say "libraryview: 无法启动监听任务"; return 1; }
 			say "libraryview: default collections on"
@@ -352,10 +377,23 @@ libraryview() {
 			stop kindletweaks-libraryview >/dev/null 2>&1 || true
 			mntroot rw
 			[ -f ${J} ] && mv ${J} /tmp/kindletweaks-libraryview.conf.disabled
+			libraryview_preload off
 			mntroot ro
+			rm -f ${LV_FLAG}
 			say "libraryview: default collections off"
+			libraryview_injected && restart kppmainapp >/dev/null 2>&1
 			;;
 		apply)
+			libraryview_apply
+			return $?
+			;;
+		screensaver)
+			# 进入屏保时由监听任务调用：注入库在就只留标记，下次进入图书馆瞬间切换；
+			# 否则校正配置，返回 10 让任务重载 KPP
+			if libraryview_injected; then
+				touch ${LV_FLAG} && chown framework ${LV_FLAG}
+				return 0
+			fi
 			libraryview_apply
 			return $?
 			;;
@@ -363,6 +401,10 @@ libraryview() {
 }
 
 libraryview_state() { [ -f /etc/upstart/kindletweaks-libraryview.conf ] && echo on || echo off; }
+libraryview_status() {
+	[ "$(libraryview_state)" = on ] || { echo off; return; }
+	libraryview_injected && echo "on（注入，免重启）" || echo "on（屏保时重载 KPP）"
+}
 
 label() {
 	case "$1" in
@@ -451,7 +493,7 @@ case "$1" in
 		echo "coll(auto): $(coll_state)"
 		echo "ssrandom: $(ss_state)"
 		echo "manga(auto): $(manga_state) $(manga_status)"
-		echo "libraryview(default collections): $(libraryview_state)"
+		echo "libraryview(default collections): $(libraryview_status)"
 		echo "debugawake: $(debugawake_status)"
 		;;
 	menu)

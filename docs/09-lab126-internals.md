@@ -118,7 +118,17 @@ event8  cyttsp5_mt       触摸屏，ABS_MT 0–1263 × 0–1679，与屏幕像�
 | `powerd_test -p` | 发送「电源键长按」调试事件（不是短按） |
 | `/usr/bin/delayShot.sh` | 延时截屏，只在开发机（存在 `/PRE_GM_DEBUGGING_FEATURES_ENABLED__REMOVE_AT_GMC`）上生效 |
 
-## 8 busybox 和 shell 的坑（补充）
+## 8 给系统进程注入代码（LD_PRELOAD）
+
+KPP、mesquite 等都是动态链接的 ELF（`/lib/ld-linux.so.3`，glibc 2.20，ARM EABI 软浮点）。以 root 启动、自己降权（没有 setuid 位）的进程不会忽略 `LD_PRELOAD`。
+
+- **能顶替哪些函数**：看目标库的重定位表。`eu-readelf -r -W 库.so | grep 符号`，如果是按符号名的 `ARM_ABS32`（虚表槽位）或 `ARM_JUMP_SLOT`（PLT），预加载库里的同名函数就会被用上；只有 `ARM_RELATIVE` 或库内直接调用的则不行。
+- **调用原函数**：`dlsym(RTLD_NEXT, "修饰后的符号名")`。C++ 成员函数按 ARM EABI 调用：`this` 在 r0，其余参数依次在 r1、r2…；按值返回的对象由调用者在 r0 传入返回地址。这一版 libstdc++ 的 `std::string` 是写时复制实现，对象就是一个指向字符的指针。
+- **交叉编译**：电脑上 `pip install ziglang`，然后 `python -m ziglang cc -target arm-linux-gnueabi.2.20 -mcpu=cortex_a7 -shared -fPIC -O2 -s -Wl,-z,lazy`。必须加 `-Wl,-z,lazy`，否则 ld.so 报 `unexpected reloc type 0x24`。
+- **挂到 upstart 任务上**：改 `/etc/upstart/<任务>.conf` 里的 `exec` 行为 `exec env LD_PRELOAD=… 程序`，然后 `kill -HUP 1`（upstart 0.6.6 没有 `initctl`，不发 SIGHUP 不会重读），再 `restart <任务>`。用 `grep 库名 /proc/$(pidof 进程)/maps` 确认已加载。
+- 实例：[07 默认收藏夹视图](07-default-collections.md#31-注入库把原生切换函数暴露出来)。
+
+## 9 busybox 和 shell 的坑（补充）
 
 - `ps` 不显示完整命令行；要按参数找进程，读 `/proc/<pid>/cmdline`。
 - `grep -l 关键字 /proc/[0-9]*/cmdline` 会匹配到 grep 自己，判断「是否在运行」时要排除自身。
