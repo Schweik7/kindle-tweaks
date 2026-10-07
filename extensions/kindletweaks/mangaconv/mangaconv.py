@@ -9,11 +9,12 @@
                                                --dir 只处理该目录里的 epub，不限大小、不等充电
     mangaconv.py status                        一行状态（给 KUAL 菜单用）
 
-队列 = documents 下旁边还没有同名 pdf/mobi/azw3 的 .epub，按内容决定怎么转：
+队列 = documents 下旁边还没有同名 pdf/mobi/azw3 的 .epub/.md/.docx，按内容决定怎么转：
   漫画（几乎每个 html 一张图、没什么文字）且 >= min_size_mb → PDF（kcc_lite 处理每页）；
   文字书（任意大小）→ AZW3（boko；失败时自动回退 Kindling）；
+  md/docx → docconv 先生成 EPUB，再按文字书转 AZW3；
   小漫画 → 不自动转，留给菜单里「按目录转换」手动转 PDF。
-转好后原 epub 按 config.json 的 after 处理（默认移到 archive_dir）。
+转好后原文件按 config.json 的 after 处理（默认移到 archive_dir）。
 """
 import io
 import hashlib
@@ -32,6 +33,7 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import docconv  # noqa: E402
 import kcc_lite  # noqa: E402
 
 CONF = os.path.join(HERE, "config.json")
@@ -349,7 +351,8 @@ def scan(conf, st, only_dir=None):
     for root, dirs, files in os.walk(only_dir or conf["documents"]):
         dirs[:] = [d for d in dirs if not d.endswith(".sdr")]
         for f in files:
-            if not f.lower().endswith(".epub"):
+            doc = docconv.is_doc(f)
+            if not (f.lower().endswith(".epub") or doc):
                 continue
             p = os.path.join(root, f)
             try:
@@ -358,7 +361,7 @@ def scan(conf, st, only_dir=None):
                 continue
             if has_output(p):
                 continue
-            if not only_dir and s.st_size < limit and not text:
+            if (doc or (not only_dir and s.st_size < limit)) and not text:
                 continue
             rec = st.get(p)
             # 跳过 / 失败过 / 等手动的，文件没变就不再试
@@ -449,8 +452,9 @@ def _run_text_backend(name, cmd, out, logf, env, work, timeout, keep_going):
     return True, ""
 
 
-def to_azw3(src, dst, conf, keep_going=None):
-    """用 boko 把 epub 转成 AZW3；失败时自动回退 Kindling。返回实际使用的后端。"""
+def to_azw3(src, dst, conf, keep_going=None, source=None):
+    """用 boko 把 epub 转成 AZW3；失败时自动回退 Kindling。返回实际使用的后端。
+    source：epub 是从 md/docx 生成的中间文件时传原文件，ASIN 按原文件计算。"""
     work = os.path.join(conf["tmp_dir"], "ebook-convert")
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
@@ -473,7 +477,7 @@ def to_azw3(src, dst, conf, keep_going=None):
                                        conf["text_timeout"], keep_going)
         if ok:
             if backend == "boko":
-                _personalize_boko_azw3(out, src)
+                _personalize_boko_azw3(out, source or src)
             shutil.move(out, dst)
             shutil.rmtree(work, ignore_errors=True)
             return backend
@@ -488,14 +492,14 @@ def after_convert(src, conf):
     act = conf["after"]
     if act == "delete":
         os.remove(src)
-        return "已删除原 epub"
+        return "已删除原文件"
     if act == "move":
         rel = os.path.relpath(src, conf["documents"])
         dst = os.path.join(conf["archive_dir"], rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.move(src, dst)
-        return "原 epub 移到 " + dst
-    return "原 epub 保留"
+        return "原文件移到 " + dst
+    return "原文件保留"
 
 
 def run(force=False, only_dir=None):
@@ -553,18 +557,22 @@ def _convert_queue(conf, st, queue, keep_charging, only_dir=None, force=False):
             st[src] = rec
             save_state(st)
 
-        book = None
-        try:
-            book = Epub(src)
-            manga, why = book.is_manga()
-            image_count = len(book.images)
-            book.close()
-        except Exception as e:  # 坏文件
-            if book is not None:
+        manga, why, image_count = False, "", 0
+        if not docconv.is_doc(src):
+            book = None
+            try:
+                book = Epub(src)
+                manga, why = book.is_manga()
+                image_count = len(book.images)
                 book.close()
-            remember("failed", "打不开：%s" % e)
-            continue
-        if manga and (s.st_size >= limit or only_dir):
+            except Exception as e:  # 坏文件
+                if book is not None:
+                    book.close()
+                remember("failed", "打不开：%s" % e)
+                continue
+        if docconv.is_doc(src):
+            kind = "doc"    # scan 已保证文字书转换器可用
+        elif manga and (s.st_size >= limit or only_dir):
             kind = "pdf"
         elif not manga and text_converter_ready(conf):
             kind = "azw3"
@@ -594,6 +602,17 @@ def _convert_queue(conf, st, queue, keep_charging, only_dir=None, force=False):
                 # 写完整后才放进 documents，书库不会索引到半截文件
                 shutil.move(work, dst)
                 rec.update(pages=pages)
+            elif kind == "doc":
+                dst = target_azw3(src)
+                log("开始 %s -> EPUB -> AZW3" % name)
+                set_status("转换中 %d/%d 本：%s -> AZW3" % (i + 1, len(queue), name[:20]))
+                epub = os.path.join(conf["tmp_dir"], "doc.epub")
+                try:
+                    rec["chapters"] = docconv.to_epub(src, epub)
+                    rec["backend"] = to_azw3(epub, dst, conf, source=src)
+                finally:
+                    if os.path.exists(epub):
+                        os.remove(epub)
             else:
                 dst = target_azw3(src)
                 log("开始 %s -> AZW3（boko，失败回退 Kindling）" % name)

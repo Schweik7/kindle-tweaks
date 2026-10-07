@@ -2,7 +2,7 @@
 # kindle-tweaks 管理脚本（KUAL 菜单和 SSH 都调用它）
 #   tweak.sh status                      打印所有功能的状态
 #   tweak.sh menu                        按当前状态重新生成 KUAL 菜单
-#   tweak.sh <popup|collview|pdffull|all> on|off   开关系统文件补丁
+#   tweak.sh <popup|collview|pdffull|browserdl|all> on|off   开关系统文件补丁
 #   tweak.sh coll sync|on|off|purge      文件夹收藏夹：立即同步 / 开机自动同步 / 关闭 / 删除生成的收藏夹
 #   tweak.sh ssrandom on|off             linkss 屏保开机随机排序
 #   tweak.sh manga on|off|now            epub 自动转换（大漫画充电→PDF，文字书传完→AZW3）：自动转换开关 / 立即转换
@@ -14,7 +14,7 @@ export PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH
 EXT=/mnt/us/extensions/kindletweaks
 F=${EXT}/files
 LOG=${EXT}/tweak.log
-UNITS="popup collview pdffull"
+UNITS="popup collview pdffull browserdl"
 NEED=""
 
 files_of() {
@@ -22,13 +22,16 @@ files_of() {
 		popup) echo /app/KPPMainApp/js/KPPMainApp.js.hbc ;;
 		collview) echo /app/lib/libKSDKLibrary.so ;;
 		pdffull) echo /opt/amazon/ebook/lib/PDFReader-impl.jar /opt/amazon/ebook/lib/ReaderSDK-impl.jar /opt/amazon/ebook/lib/ReaderSDK-impl-zh.jar ;;
+		browserdl) echo /usr/bin/mesquite ;;
 	esac
 }
 
-# 改完后要重启哪个进程：书库界面（KPPMainApp）只需重启它自己，Java 阅读器要重启整个 framework
+# 改完后要重启哪个进程：书库界面（KPPMainApp）只需重启它自己，Java 阅读器要重启整个 framework；
+# 浏览器离开就退出（unloadOnPause），下次打开即生效
 restart_of() {
 	case "$1" in
 		pdffull) echo framework ;;
+		browserdl) echo none ;;
 		*) echo kppmainapp ;;
 	esac
 }
@@ -87,10 +90,13 @@ set_unit() {
 		N=${T##*/}
 		S=${F}/${N}.${suf}
 		[ "$(m ${T})" = "$(m ${S})" ] && continue
-		# 先写 .new 再 mv：正在运行的进程仍持有旧文件，不会读到半截
-		cp ${S} ${T}.new && chmod 644 ${T}.new && mv ${T}.new ${T}
+		# 先写 .new 再 mv：正在运行的进程仍持有旧文件，不会读到半截；可执行文件保留 755
+		[ -x ${T} ] && md=755 || md=644
+		cp ${S} ${T}.new && chmod ${md} ${T}.new && mv ${T}.new ${T}
 	done
 	sync
+	# 商店后台进程 stored 也是 mesquite，不重启它，旧文件仍被占用，根分区切不回只读
+	[ ${u} = browserdl ] && restart stored >/dev/null 2>&1
 	mntroot ro
 	if [ "$(state ${u})" = "${want}" ]; then
 		say "${u}: -> ${want}"
@@ -198,10 +204,10 @@ manga() {
 manga_state() { [ -f /etc/upstart/mangaconv.conf ] && echo on || echo off; }
 manga_min() { sed -n 's/.*"min_size_mb"[^0-9]*\([0-9]*\).*/\1/p' ${EXT}/mangaconv/config.json 2>/dev/null | head -1; }
 
-# 含 epub（且旁边还没有同名输出）的目录 -> KUAL 菜单项；序号对应 dirs.txt 的行号
+# 含 epub/md/docx（且旁边还没有同名输出）的目录 -> KUAL 菜单项；序号对应 dirs.txt 的行号
 manga_dir_items() {
 	M=${EXT}/mangaconv
-	find /mnt/us/documents -name "*.epub" 2>/dev/null | while read -r f; do
+	find /mnt/us/documents \( -iname "*.epub" -o -iname "*.md" -o -iname "*.markdown" -o -iname "*.docx" \) 2>/dev/null | while read -r f; do
 		b=${f%.*}
 		[ -f "${b}.pdf" ] || [ -f "${b}.mobi" ] || [ -f "${b}.azw3" ] || [ -f "${b}.azw" ] || echo "${f%/*}"
 	done | sort | uniq -c > ${M}/dirs.count
@@ -218,7 +224,7 @@ manga_dir_items() {
 		sep=",
 "
 	done < ${M}/dirs.count
-	[ ${n} = 0 ] && printf '\t\t\t\t{"name": "documents 里没有待转换的 epub", "priority": 1, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "menu"}' "${EXT}"
+	[ ${n} = 0 ] && printf '\t\t\t\t{"name": "documents 里没有待转换的 epub/md/docx", "priority": 1, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "menu"}' "${EXT}"
 	echo
 }
 manga_status() { head -c 120 ${EXT}/mangaconv/status.txt 2>/dev/null | tr -d '"\\\n' || true; }
@@ -388,8 +394,9 @@ EOF
 		toggle "去除「云端不可用」弹窗" "$(state popup)" popup 1 "关闭（还原原版）"
 		toggle "解锁「查看选项→收藏夹」" "$(state collview)" collview 2 "关闭（还原原版）"
 		toggle "PDF 全屏（无底栏无边距）" "$(state pdffull)" pdffull 3 "关闭（还原原版）"
+		toggle "浏览器可下载任意文件（存到 documents）" "$(state browserdl)" browserdl 4 "关闭（还原原版）"
 		cat <<EOF
-		{"name": "文件夹收藏夹 [自动同步$(label $(coll_state))]", "priority": 4, "items": [
+		{"name": "文件夹收藏夹 [自动同步$(label $(coll_state))]", "priority": 5, "items": [
 			{"name": "立即同步", "priority": 1, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "coll sync"},
 			{"name": "开启自动同步（开机自启）", "priority": 2, "checked": $([ $(coll_state) = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "coll on"},
 			{"name": "关闭自动同步", "priority": 3, "checked": $([ $(coll_state) = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "coll off"},
@@ -398,31 +405,31 @@ EOF
 EOF
 		ms=$(manga_status)
 		cat <<EOF
-		{"name": "epub 自动转换 [$(label $(manga_state))]", "priority": 5, "items": [
+		{"name": "epub/md/docx 自动转换 [$(label $(manga_state))]", "priority": 6, "items": [
 			{"name": "${ms:-还没运行过}（点此刷新）", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
 			{"name": "开启自动转换（文字书传完即转）", "priority": 2, "checked": $([ $(manga_state) = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga on"},
 			{"name": "关闭自动转换", "priority": 3, "checked": $([ $(manga_state) = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga off"},
 			{"name": "立即转换（不等充电）", "priority": 4, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "manga now"},
-			{"name": "规则：漫画≥$(manga_min)MB充电→PDF，文字书传完→AZW3 [$(text_backend_label)]", "priority": 5, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "规则：漫画≥$(manga_min)MB充电→PDF，文字书、md、docx传完→AZW3 [$(text_backend_label)]", "priority": 5, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
 			{"name": "按目录转换（不限大小）", "priority": 6, "items": [
 $(manga_dir_items)
 			]}
 		]},
 EOF
-		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 6 "关闭（固定顺序，开机更快）"
+		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 7 "关闭（固定顺序，开机更快）"
 		cat <<EOF
-		{"name": "默认收藏夹视图 [$(label $(libraryview_state))]", "priority": 7, "items": [
+		{"name": "默认收藏夹视图 [$(label $(libraryview_state))]", "priority": 8, "items": [
 			{"name": "开启（每次进入图书馆时校正）", "priority": 1, "checked": $([ "$(libraryview_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview on"},
 			{"name": "关闭（不再强制，保留当前视图）", "priority": 2, "checked": $([ "$(libraryview_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview off"}
 		]},
-		{"name": "调试模式 [$(debugawake_label)]", "priority": 8, "items": [
+		{"name": "调试模式 [$(debugawake_label)]", "priority": 9, "items": [
 			{"name": "查看当前状态：$(debugawake_status)（点此刷新）", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
 			{"name": "不深度休眠", "priority": 2, "checked": $([ "$(debugawake_state)" = always ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake always"},
 			{"name": "充电时不深度休眠", "priority": 3, "checked": $([ "$(debugawake_state)" = charging ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake charging"},
 			{"name": "关闭调试模式", "priority": 4, "checked": $([ "$(debugawake_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake off"}
 		]},
-		{"name": "升级固件后：全部补丁重新开启", "priority": 9, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
-		{"name": "全部补丁还原原版", "priority": 10, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
+		{"name": "升级固件后：全部补丁重新开启", "priority": 10, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
+		{"name": "全部补丁还原原版", "priority": 11, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
 		]
 	}
 	]
@@ -448,7 +455,7 @@ case "$1" in
 		menu
 		do_restart
 		;;
-	popup | collview | pdffull)
+	popup | collview | pdffull | browserdl)
 		set_unit $1 $2 && screen "kindle-tweaks: $1 $2 OK" || screen "kindle-tweaks: $1 $2 FAILED, see tweak.log"
 		menu
 		do_restart

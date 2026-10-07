@@ -7,8 +7,9 @@
 | 漫画（几乎每页一张图）且 ≥ `min_size_mb`（默认 50 MB） | 充电时转全屏 PDF | `kcc_lite.py`（KCC 精简移植），见第 1–5 节 |
 | 文字书（任意大小） | 传输完成立即转 AZW3（KF8），不要求充电 | 原生 ARM boko；失败时自动回退 Kindling，见第 7 节 |
 | 小于 `min_size_mb` 的漫画 | 不自动转 | 在菜单「按目录转换（不限大小）」里选目录，手动转 PDF |
+| `.md` / `.markdown` / `.docx` | 传输完成立即转 AZW3 | `docconv.py` 先生成 EPUB，再走文字书流程，见第 8 节 |
 
-旁边已有同名 `.pdf` / `.mobi` / `.azw3` / `.azw` 的 epub 一律不转。
+旁边已有同名 `.pdf` / `.mobi` / `.azw3` / `.azw` 的源文件一律不转。
 
 > 验证：Kindle Oasis 3，FW 5.15.1.1，KUAL python3（Python 3.9 + Pillow 9.0）。代码：[`extensions/kindletweaks/mangaconv/`](../extensions/kindletweaks/mangaconv/)。
 > 配合 [04 PDF 全屏](04-pdf-fullscreen.md) 使用：转出来的 PDF 每页正好一屏，阅读器里 1:1 全屏显示。
@@ -28,6 +29,7 @@
 |---|---|
 | `kcc_lite.py` | KCC `image.py` / `page_number_crop_alg.py` 的精简移植（GPLv3）。功能：去白边、去页码、跨页拆分/旋转、自动对比度、缩放并补边到屏幕分辨率。 |
 | `mangaconv.py` | 解析 epub 阅读顺序、判断是不是漫画、边处理边写 PDF；队列、状态、拔电中止、转换期间防休眠 |
+| `docconv.py` | md / docx → EPUB（第 8 节） |
 | `mangaconv.conf` | upstart 任务：每 30 秒检查文件是否传输完成，文字书随时转、漫画等充电 |
 | `config.json` | 配置（见第 4 节） |
 | `../bin/boko` | 文字书 epub → AZW3 的主转换器（原生 ARM 静态版） |
@@ -157,7 +159,24 @@ scp extensions/kindletweaks/bin/boko extensions/kindletweaks/bin/kindling-cli \
 
 另用 8 本中文书做了实机导入回归：大义觉迷录、西域四百年、骑鹅旅行记、贞德两次审判记录、猎人笔记、唐诗鉴赏辞典、漫长的余生、百年战争。8/8 由 boko 转换并进入 Oasis 3 内容库，calibre 解析 8/8 成功；强制 boko 返回失败时 Kindling 回退也成功。图片较多的《漫长的余生》用时 4 秒（输出 8.6 MB），有 219 张图的《百年战争》用时 35 秒（输出 20.4 MB），两本都因正文密度足够而正确识别为文字书。
 
-## 8 杂项
+## 8 md / docx → AZW3
+
+boko 的帮助虽然把 `md`、`txt` 列为输入格式，实测会报 `Markdown cannot be used as input format`；boko 和 Kindling 都不读 docx。所以先在 Kindle 上用纯 Python 库生成 EPUB：
+
+```sh
+LD_LIBRARY_PATH=/mnt/us/python3/lib /mnt/us/python3/bin/python3.9 -m pip install markdown mammoth
+```
+
+| 源文件 | 转 HTML | 处理 |
+|---|---|---|
+| `.md` / `.markdown` | `markdown`（`extra` + `sane_lists`：表格、代码块、脚注等） | 相对路径的本地 PNG/JPEG/GIF 图片打包进书；远程图片换成 `[替代文字]` |
+| `.docx` | `mammoth`（标题层级、粗斜体、列表、表格、图片） | PNG/JPEG/GIF 图片打包；EMF/WMF 矢量图换成替代文字；不保留 Word 的字体、页边距 |
+
+然后按出现的最高一级标题（`h1`，没有就 `h2`）拆章并生成目录，书名取文件名，正文含中日文时语言标为 `zh`。EPUB 的 zip 时间戳固定，同一份源文件生成的 EPUB 完全相同；ASIN 按原文件内容计算。缺少这两个库时该文件记为失败，日志会提示安装命令。
+
+单独转换：`python3.9 docconv.py 笔记.md 笔记.epub`。Kindle 自己能打开 `.txt`，所以 txt 不转。
+
+## 9 杂项
 
 - 想重新转某本被跳过或失败的书：从 `state.json` 里删掉它那一条，或者改一下文件（mtime 变了就会重试）。
-- 已经有同名 `.pdf` / `.mobi` / `.azw3` / `.azw` 的 epub 不会转，不会覆盖你自己的文件。
+- 已经有同名 `.pdf` / `.mobi` / `.azw3` / `.azw` 的源文件不会转，不会覆盖你自己的文件。

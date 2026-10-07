@@ -15,10 +15,11 @@
 | 2 | 文件夹 → 收藏夹自动同步 | Kindle 不认文件夹；未注册时「新建收藏夹」是灰色的 | [docs/02-folder-collections.md](docs/02-folder-collections.md) |
 | 3 | 解锁「查看选项 → 收藏夹」视图 | 收藏夹里的书仍在书库第一层平铺；该视图在未注册时是灰色的 | [docs/03-collections-view.md](docs/03-collections-view.md) |
 | 4 | PDF 全屏 | PDF 底部常驻阅读百分比、四周有白边，设置里关不掉 | [docs/04-pdf-fullscreen.md](docs/04-pdf-fullscreen.md) |
-| 5 | epub 自动转换 | Kindle 打不开 epub。文字书传输完成后立即用原生 ARM boko 转成 AZW3，失败时回退 Kindling；大漫画充电时用精简移植的 KCC 转成全屏 PDF | [docs/05-manga-convert.md](docs/05-manga-convert.md) |
+| 5 | epub/md/docx 自动转换 | Kindle 打不开 epub。文字书传输完成后立即用原生 ARM boko 转成 AZW3，失败时回退 Kindling；大漫画充电时用精简移植的 KCC 转成全屏 PDF；md、docx 先生成 EPUB 再转 AZW3 | [docs/05-manga-convert.md](docs/05-manga-convert.md) |
 | 6 | 屏保开机随机排序开关 | linkss 开机时重排所有屏保，图多时开机很慢 | （菜单里直接切换） |
 | 7 | 调试模式 | Kindle 进入深度休眠会断开 Wi-Fi/SSH；可选始终不深度休眠、仅充电时不深度休眠或关闭，屏保始终照常 | [docs/06-debug-awake.md](docs/06-debug-awake.md) |
 | 8 | 默认收藏夹视图 | Home 固定网格、图书馆筛选等操作会让界面回到「全部 + 网格」；每次进入图书馆时自动恢复收藏夹视图 | [docs/07-default-collections.md](docs/07-default-collections.md) |
+| 9 | 浏览器下载任意文件 | 体验版浏览器只许下载 .azw/.prc/.mobi/.txt，下载 epub、pdf 弹「文件类型无效」；放开后照常存到 documents，epub 由功能 5 自动转换 | [docs/08-browser-download.md](docs/08-browser-download.md) |
 
 ## KUAL 菜单
 
@@ -27,8 +28,9 @@ Kindle Tweaks
 ├─ 去除「云端不可用」弹窗 [已开启]   → 开启 / 关闭（还原原版）
 ├─ 解锁「查看选项→收藏夹」 [已开启] → 开启 / 关闭（还原原版）
 ├─ PDF 全屏（无底栏无边距） [已开启] → 开启 / 关闭（还原原版）
+├─ 浏览器可下载任意文件（存到 documents） [已开启] → 开启 / 关闭（还原原版）
 ├─ 文件夹收藏夹 [自动同步已开启]     → 立即同步 / 开启自动同步 / 关闭自动同步 / 删除所有自动生成的收藏夹
-├─ epub 自动转换 [已开启]           → 进度 / 开启 / 关闭 / 立即转换 / 规则 / 按目录转换（动态列出目录）
+├─ epub/md/docx 自动转换 [已开启]   → 进度 / 开启 / 关闭 / 立即转换 / 规则 / 按目录转换（动态列出目录）
 ├─ 屏保开机随机排序（linkss） [已关闭] → 开启 / 关闭
 ├─ 默认收藏夹视图 [已开启]             → 开启 / 关闭（保留当前视图）
 ├─ 调试模式 [已关闭]                   → 查看当前状态 / 不深度休眠 / 充电时不深度休眠 / 关闭调试模式
@@ -44,13 +46,14 @@ Kindle Tweaks
 extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensions/ 下
   tweak.sh                  所有开关的实现（KUAL 和 SSH 共用），生成 menu.json
   foldercoll/               文件夹 → 收藏夹（sync.py + upstart 任务模板）
-  mangaconv/                漫画 epub → PDF、文字书 epub → AZW3（mangaconv.py + upstart 任务模板）
+  mangaconv/                漫画 epub → PDF、文字书 epub/md/docx → AZW3（mangaconv.py + docconv.py + upstart 任务模板）
   debugawake/               调试模式：充电时推迟深度休眠的 upstart 任务模板
   libraryview/              每次进入图书馆时恢复收藏夹视图的 upstart 任务模板
   files/                    补丁用的系统文件 *.orig / *.patched（自己生成，不进 git）
 tools/                      在电脑上生成 .patched
   patch_kpp.py              KPPMainApp.js.hbc（功能 1，需要 hermes-dec）
   patch_ksdk.py             libKSDKLibrary.so（功能 3，纯 Python）
+  patch_mesquite.py         /usr/bin/mesquite（功能 9，纯 Python）
   pdf_fullscreen/build.py   3 个 Java jar（功能 4，需要 JDK 9+）
   build_ebook_converters.py 从固定源码构建 boko + Kindling ARMv7 静态版（功能 5）
 docs/                       原理、排查过程、新固件上怎么重做
@@ -64,7 +67,7 @@ docs/                       原理、排查过程、新固件上怎么重做
 - 能在 Kindle 上以 root 执行命令，二选一：
   - [USBNetwork](https://www.mobileread.com/forums/showthread.php?t=225030) 开启 SSH over WiFi（推荐，下文用 `ssh root@<kindle-ip>`）。
   - hotfix 自带的 `;log runme`：在书库搜索栏输入，会以 root 执行根目录的 `RUNME.sh`。
-- 功能 2、5 需要 Kindle 上有 Python 3（例如 KUAL 的 python3 扩展，装在 `/mnt/us/python3`，自带 Pillow）。
+- 功能 2、5 需要 Kindle 上有 Python 3（例如 KUAL 的 python3 扩展，装在 `/mnt/us/python3`，自带 Pillow）。功能 5 转换 md/docx 还要在 Kindle 上 `pip install markdown mammoth`（见 [docs/05](docs/05-manga-convert.md) 第 8 节）。
 - 生成补丁需要电脑上有 Python 3；功能 1 还要 [hermes-dec](https://github.com/P1sec/hermes-dec)（`pip install git+https://github.com/P1sec/hermes-dec`），功能 4 还要 JDK 9+；功能 5 的文字书转换器需要 rustup + Rust 1.91+ 构建一次。
 
 ## 快速开始
@@ -81,10 +84,12 @@ F=/mnt/us/extensions/kindletweaks/files
 scp root@<kindle-ip>:/app/KPPMainApp/js/KPPMainApp.js.hbc KPPMainApp.js.hbc.orig
 scp root@<kindle-ip>:/app/lib/libKSDKLibrary.so          libKSDKLibrary.so.orig
 scp -r root@<kindle-ip>:/opt/amazon/ebook/lib            ebook-lib
+scp root@<kindle-ip>:/usr/bin/mesquite                   mesquite.orig
 
 # 3. 在电脑上生成补丁版（需要哪个功能就生成哪个）
 python tools/patch_kpp.py  KPPMainApp.js.hbc.orig KPPMainApp.js.hbc.patched
 python tools/patch_ksdk.py libKSDKLibrary.so.orig libKSDKLibrary.so.patched
+python tools/patch_mesquite.py mesquite.orig mesquite.patched
 python tools/pdf_fullscreen/build.py ebook-lib pdf-out     # 生成 3 对 jar 的 .orig/.patched
 
 # 4. 传到扩展的 files/
