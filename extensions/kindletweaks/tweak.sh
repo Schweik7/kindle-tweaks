@@ -313,7 +313,14 @@ debugawake_status() {
 libraryview_apply() {
 	C=/var/local/LIBRARY_CONFIG
 	N=${C}.kindletweaks.new
-	[ -f ${C} ] || return 1
+	if [ ! -f ${C} ]; then
+		# KPP 有时会整个删掉这个文件（之后按默认的「全部 + 网格」显示），只写这一个键它也认
+		printf '{"library_mode_selected":"COLLECTIONS"}' > ${N} || return 1
+		chown framework:javausers ${N}
+		chmod 664 ${N}
+		mv ${N} ${C}
+		return 10
+	fi
 	grep -q '"library_mode_selected"[[:space:]]*:[[:space:]]*"COLLECTIONS"' ${C} 2>/dev/null && return 0
 	sed 's/"library_mode_selected"[[:space:]]*:[[:space:]]*"[^"]*"/"library_mode_selected":"COLLECTIONS"/' ${C} > ${N} || return 1
 	grep -q '"library_mode_selected":"COLLECTIONS"' ${N} || { rm -f ${N}; return 1; }
@@ -419,7 +426,7 @@ EOF
 		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 7 "关闭（固定顺序，开机更快）"
 		cat <<EOF
 		{"name": "默认收藏夹视图 [$(label $(libraryview_state))]", "priority": 8, "items": [
-			{"name": "开启（每次进入图书馆时校正）", "priority": 1, "checked": $([ "$(libraryview_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview on"},
+			{"name": "开启（进入屏保时校正）", "priority": 1, "checked": $([ "$(libraryview_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview on"},
 			{"name": "关闭（不再强制，保留当前视图）", "priority": 2, "checked": $([ "$(libraryview_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview off"}
 		]},
 		{"name": "调试模式 [$(debugawake_label)]", "priority": 9, "items": [

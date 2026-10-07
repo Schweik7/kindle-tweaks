@@ -18,7 +18,7 @@
 | 5 | epub/md/docx 自动转换 | Kindle 打不开 epub。文字书传输完成后立即用原生 ARM boko 转成 AZW3，失败时回退 Kindling；大漫画充电时用精简移植的 KCC 转成全屏 PDF；md、docx 先生成 EPUB 再转 AZW3 | [docs/05-manga-convert.md](docs/05-manga-convert.md) |
 | 6 | 屏保开机随机排序开关 | linkss 开机时重排所有屏保，图多时开机很慢 | （菜单里直接切换） |
 | 7 | 调试模式 | Kindle 进入深度休眠会断开 Wi-Fi/SSH；可选始终不深度休眠、仅充电时不深度休眠或关闭，屏保始终照常 | [docs/06-debug-awake.md](docs/06-debug-awake.md) |
-| 8 | 默认收藏夹视图 | Home 固定网格、图书馆筛选等操作会让界面回到「全部 + 网格」；每次进入图书馆时自动恢复收藏夹视图 | [docs/07-default-collections.md](docs/07-default-collections.md) |
+| 8 | 默认收藏夹视图 | Home 固定网格、图书馆筛选等操作会让界面回到「全部 + 网格」；进入屏保时悄悄恢复，唤醒后图书馆就是收藏夹视图 | [docs/07-default-collections.md](docs/07-default-collections.md) |
 | 9 | 浏览器下载任意文件 | 体验版浏览器只许下载 .azw/.prc/.mobi/.txt，下载 epub、pdf 弹「文件类型无效」；放开后照常存到 documents，epub 由功能 5 自动转换 | [docs/08-browser-download.md](docs/08-browser-download.md) |
 
 ## KUAL 菜单
@@ -152,7 +152,7 @@ lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home    # 回主
 lipc-get-prop com.lab126.appmgrd activeApp                              # 当前前台应用
 
 lipc-set-prop com.lab126.powerd wakeUp 1               # 唤醒
-lipc-set-prop com.lab126.powerd powerButton 1          # 模拟按电源键（进/出屏保）
+lipc-set-prop -i com.lab126.powerd powerButton 1       # 模拟按电源键（进/出屏保）；整数属性要加 -i
 lipc-set-prop com.lab126.powerd preventScreenSaver 1   # 调试时禁止进屏保，用完改回 0
 lipc-get-prop com.lab126.powerd isCharging             # 是否在充电（1/0）
 lipc-get-prop com.lab126.powerd status                 # 电源状态、休眠倒计时、电量

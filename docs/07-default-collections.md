@@ -1,6 +1,6 @@
 # 07 默认收藏夹视图
 
-> 效果：允许临时切换视图；下次进入「图书馆」时仍以收藏夹视图打开。没有定时轮询，也不会阻止深度休眠。
+> 效果：允许临时切换视图；进入屏保时悄悄恢复，下次唤醒图书馆仍是收藏夹视图。没有定时轮询，也不会阻止深度休眠。
 
 ## 1 三种容易混淆的状态
 
@@ -46,10 +46,14 @@ sh /mnt/us/extensions/kindletweaks/tweak.sh libraryview on
 开启时会安装 `/etc/upstart/kindletweaks-libraryview.conf`：
 
 1. `kppmainapp` 启动前，把顶层 `library_mode_selected` 校正为 `COLLECTIONS`。
-2. 之后阻塞等待 `com.lab126.appmgrd` 的 `historyChange` 事件，不做定时轮询。
-3. 每次进入 `KPP_LIBRARY` 时再次检查；如果刚从网格/列表或内容筛选切回，校正配置并只重载一次主界面。
+2. 之后阻塞等待 `com.lab126.powerd` 的 `goingToScreenSaver` 事件，不做定时轮询。
+3. 每次进入屏保时再次检查；模式不对就校正配置并重载一次 KPP。屏保盖住整个屏幕，重载时的白屏看不到；appmgrd 会在 KPP 重新注册后恢复原来的界面，唤醒后图书馆就是收藏夹视图。
 
-它不会锁住 `LIBRARY_CONFIG`，也不会改排序、筛选上下文或收藏夹数据库。当前会话仍可临时切到网格/列表；离开后再次进入图书馆才恢复收藏夹视图。
+它不会锁住 `LIBRARY_CONFIG`，也不会改排序、筛选上下文或收藏夹数据库。使用中仍可临时切到「全部」或网格/列表，这个选择保持到这次用完；下次唤醒恢复收藏夹视图。
+
+**为什么不在进入图书馆时立刻校正**：KPP 只在启动时读 `LIBRARY_CONFIG`，校正只能靠重载 KPP——加载 React Native、书库和封面并重新向 appmgrd 注册约 7 秒，整屏白屏。旧版本就是这样做的（还会在 KPP 注册前发跳转 URI，触发「无法启动选定的应用程序」弹窗）。
+
+**`LIBRARY_CONFIG` 整个消失**：实测这个文件会被删掉（推测是 KPP 收到 `kRegistrationChangedEvent` 重置书库时一起删的，假注册设备唤醒联网、获取凭证失败时会触发；尚未确认），之后 KPP 按默认的「全部 + 网格」显示。校正时文件不存在就写一个最小配置 `{"library_mode_selected":"COLLECTIONS"}`，KPP 能正常读取，其余键用默认值。
 
 关闭时只移除自动校正任务，不改当前选择：
 
