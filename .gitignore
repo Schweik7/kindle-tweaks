@@ -32,3 +32,4 @@ devices.json
 kindle_token
 sync_buf
 server/**/config.json
+events.jsonl

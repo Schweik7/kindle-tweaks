@@ -15,7 +15,7 @@ VPS: server/wxsend/wxsend.py serve（systemd，7×24 在线）
      拉取接口 127.0.0.1:8860，nginx 以 https://<域名>/kindle/ 对外，X-Token 校验
                        ▲
 Kindle: upstart 任务 kindletweaks-wxsend
-     亮屏（outOfScreenSaver）立即拉、醒着每 5 分钟拉一次
+     默认只在亮屏（outOfScreenSaver）时拉；可选醒着时每 N 分钟再拉
      curl /list → /file/<id> → 校验大小 → mv 进 documents → POST /ack/<id>
 ```
 
@@ -100,7 +100,9 @@ systemctl enable --now kindle-wxsend
 - 可以勾选多台 Kindle 一起删除；绑定它们的用户随之解绑。删掉的 Kindle 下次来取书时会重新出现。
 - 修改接口只收 `Content-Type: application/json`，别的网站没法借浏览器里的登录状态跨站提交。
 
-数据在 `users.json`（用户 → 设备列表）和 `devices.json`（设备码 → 备注、上次来取）。队列里每本书的 `.acked` 记录已经取走它的设备。
+管理页最上面是**同步情况**：最近 60 本书，每本显示发送者、大小、收到时间，以及每台目标 Kindle 的状态（✓ 已送达和时间 / 下载中 / 下载中断、下次同步重试 / 等待来取和它上次来的时间），整体标「同步中」「全部送达」「已删除」或「未绑定，暂存」。数据来自 `events.jsonl`（recv / fetch / ack / done / delete 事件，只追加，过长时自动截断）。
+
+数据在 `users.json`（用户 → 设备列表）和 `devices.json`（设备码 → 备注、上次来取、那次有几本待取）。队列里每本书的 `.acked` 记录已经取走它的设备。
 
 日志：`journalctl -u kindle-wxsend -f`。
 
@@ -144,7 +146,10 @@ sh ../tweak.sh wxsend on      # 安装 upstart 任务
 - 重名不覆盖，改名为「书名 (2).epub」。
 - `config` 里的 `DIR` 可以改成 `/mnt/us/documents/微信传书`；再开启[文件夹收藏夹](02-folder-collections.md)，就会自动归进同名收藏夹。
 - 系统自带的 CA 证书偏旧，有 `/mnt/us/python3/…/certifi/cacert.pem` 时 curl 用它验证证书。
-- 屏保和休眠期间任务阻塞在 `lipc-wait-event -s 300 … outOfScreenSaver`，不唤醒 CPU。刚唤醒时 Wi-Fi 还在重连，连不上服务器会每 10 秒重试，最多 1 分钟。
+- **同步时机**看 `config` 的 `INTERVAL`（任务每轮重读，改了不用重启）：
+  - `INTERVAL=0`（默认）：只在亮屏（出屏保）时同步一次。最省电；想马上收书就按一下电源键、或点 KUAL「立即同步」。
+  - `INTERVAL=N`：亮屏时同步，醒着时再每 N 分钟同步一次，适合一直开着屏看书时也想收新书。
+- 屏保和休眠期间任务阻塞在 `lipc-wait-event … outOfScreenSaver`，不唤醒 CPU。刚唤醒时 Wi-Fi 还在重连，连不上服务器会每 10 秒重试，最多 1 分钟。
 
 ## 5 注意
 

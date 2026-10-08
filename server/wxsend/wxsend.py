@@ -260,12 +260,53 @@ def items_for(device):
             if device in user_devices(it[3], users) and device not in acked(it[0])]
 
 
-def seen_device(code, ip):
+def seen_device(code, ip, offered=0):
     with lock:
         devs = load("devices.json", {})
         d = devs.setdefault(code, {"label": "", "seen": 0, "ip": ""})
-        d.update(seen=time.time(), ip=ip)
+        d.update(seen=time.time(), ip=ip, offered=offered)   # offered：这次同步有几本待取
         save("devices.json", devs)
+
+
+def event(ev, item, **kw):
+    """同步记录（events.jsonl）：recv 收到 / fetch 开始下载 / ack 某台取走 / done 全部送达 / delete 删除。
+    只追加；超过 4000 行时保留最近 2000 行。"""
+    p = path("events.jsonl")
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"t": time.time(), "ev": ev, "id": item, **kw}, ensure_ascii=False) + "\n")
+    try:
+        if os.path.getsize(p) > 1 << 20:
+            lines = open(p, encoding="utf-8").readlines()
+            if len(lines) > 4000:
+                with open(p + ".tmp", "w", encoding="utf-8") as f:
+                    f.writelines(lines[-2000:])
+                os.replace(p + ".tmp", p)
+    except OSError:
+        pass
+
+
+def history(limit=60):
+    """按书汇总最近的同步记录，新的在前。"""
+    books = {}
+    try:
+        lines = open(path("events.jsonl"), encoding="utf-8").readlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        b = books.setdefault(e["id"], {"id": e["id"], "fetch": {}, "ack": {}})
+        if e["ev"] == "recv":
+            b.update(name=e.get("name"), size=e.get("size"), sender=e.get("sender"), recv=e["t"])
+        elif e["ev"] in ("fetch", "ack"):
+            b[e["ev"]][e.get("device", "")] = e["t"]
+        elif e["ev"] in ("done", "delete"):
+            b[e["ev"]] = e["t"]
+    out = [b for b in books.values() if b.get("recv")]
+    out.sort(key=lambda b: -b["recv"])
+    return out[:limit]
 
 
 def mb(n):
@@ -306,6 +347,7 @@ def receive_file(name, fetch, sender):
         return f"《{name}》不是电子书格式，没收。"
     with lock:
         item_id = enqueue(name, data, sender)
+        event("recv", item_id, name=name, size=len(data), sender=sender)
     log.info("收到 %s（%s）-> %s", name, mb(len(data)), item_id)
     return f"📚 收到《{name}》（{mb(len(data))}）"
 
@@ -366,6 +408,7 @@ def command(text, sender):
         with lock:
             for it in mine:
                 shutil.rmtree(os.path.join(QUEUE, it[0]), ignore_errors=True)
+                event("delete", it[0])
         return f"已清空你的待取队列（{len(mine)} 本）。"
     return HELP
 
@@ -623,10 +666,18 @@ ul{margin:8px 0 0 52px;padding:0;list-style:none}
 li{display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:3px 0;border-top:1px dashed var(--line)}
 .unbound{color:var(--warn);font-size:12px}
 .empty{color:var(--mute);font-size:13px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.chip{font-size:12px;border-radius:999px;padding:2px 10px;border:1px solid var(--line);color:var(--mute)}
+.chip.ok{color:var(--acc);border-color:var(--acc)}
+.chip.run{color:var(--fg);border-style:dashed}
+.chip.bad{color:var(--warn);border-color:var(--warn)}
+.tag{font-size:12px;margin-left:6px}
+.tag.ok{color:var(--acc)} .tag.bad{color:var(--warn)} .tag.run{color:var(--mute)}
 </style></head><body><main>
 <h1>微信传书</h1>
 <p class="sub">给每个微信用户勾选他的 Kindle（可多台），他发的书每台送一份，都取走后从服务器删除。没绑定的人发来的书先存着，绑定后自动送过去。<br>
 邀请朋友：把 <a href="join" target="_blank">客服二维码页</a> 发给他们。</p>
+<h2>同步情况 <span class="meta" id="refreshed"></span></h2><div id="books"></div>
 <h2>Kindle</h2><div id="devices"></div>
 <h2>微信用户</h2><div id="users"></div>
 </main>
@@ -649,10 +700,32 @@ async function post(action, body) {
 async function load() {
   const s = await (await fetch("admin/state")).json();
   const name = code => { const d = s.devices.find(x => x.code === code); return esc(d && d.label || code); };
+  const clock = t => { const d = new Date(t * 1000), n = new Date(s.now * 1000);
+    const hm = d.toTimeString().slice(0, 5);
+    return d.toDateString() === n.toDateString() ? hm : `${d.getMonth() + 1}-${d.getDate()} ${hm}`; };
+  // 每台目标 Kindle 一个状态：已送达 / 下载中（或中断，等下次重试）/ 等待来取
+  const chip = (b, code) => {
+    const dev = s.devices.find(x => x.code === code) || {};
+    if (b.ack[code]) return `<span class="chip ok">✓ ${name(code)} ${clock(b.ack[code])}</span>`;
+    if (b.delete) return `<span class="chip">${name(code)} 未取</span>`;
+    if (b.fetch[code]) return s.now - b.fetch[code] < 900
+      ? `<span class="chip run">⇣ ${name(code)} 下载中</span>`
+      : `<span class="chip bad">${name(code)} 下载中断，下次同步重试</span>`;
+    return `<span class="chip run">${name(code)} 等待来取 · 上次来 ${ago(dev.seen, s.now)}</span>`;
+  };
+  $("#refreshed").textContent = "· " + clock(s.now) + " 更新，每 30 秒刷新";
+  $("#books").innerHTML = s.books.length ? s.books.map(b => {
+    const tag = b.done ? `<span class="tag ok">全部送达</span>` : b.delete ? `<span class="tag bad">已删除</span>`
+      : b.targets.length ? `<span class="tag run">同步中</span>` : `<span class="tag bad">未绑定，暂存</span>`;
+    return `<div class="card">
+      <div><span class="name">${esc(b.name)}</span>${tag}</div>
+      <div class="meta">${esc(b.who || "（未知）")} · ${b.size} · ${clock(b.recv)} 收到${b.done ? " · " + clock(b.done) + " 送完" : ""}</div>
+      <div class="chips">${b.targets.map(c => chip(b, c)).join("")}</div>
+    </div>`; }).join("") : `<p class="empty">还没有同步记录。</p>`;
   $("#devices").innerHTML = s.devices.length ? s.devices.map(d => `
     <div class="card row">
       <input type="checkbox" class="pick" value="${esc(d.code)}">
-      <div class="grow"><code>${esc(d.code)}</code> <span class="meta">上次来取 ${ago(d.seen, s.now)} · ${esc(d.ip)}</span></div>
+      <div class="grow"><code>${esc(d.code)}</code> <span class="meta">上次来取 ${ago(d.seen, s.now)}（${d.offered ? "有 " + d.offered + " 本待取" : "没有新书"}） · ${esc(d.ip)}</span></div>
       <input value="${esc(d.label)}" placeholder="备注名，比如 我的 Oasis" data-dev="${esc(d.code)}" class="lbl">
     </div>`).join("") + `<div class="row" style="justify-content:flex-end"><button id="forget">删除所选 Kindle</button></div>`
     : `<p class="empty">还没有 Kindle 来取过书。Kindle 开启「微信传书」并联网同步一次后会出现在这里。</p>`;
@@ -809,6 +882,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "devices": [{"code": c, **d} for c, d in sorted(devs.items(), key=lambda x: -x[1].get("seen", 0))],
             "users": [{"id": u, **info, "pending": pending.get(u, [])}
                       for u, info in sorted(users.items(), key=lambda x: -x[1].get("last", 0))],
+            # 同步情况：每本书的目标设备取当前绑定（改绑定会影响还没送完的书）
+            "books": [{**b, "who": users.get(b.get("sender"), {}).get("name", ""),
+                       "size": mb(b.get("size") or 0),
+                       "targets": sorted(set(user_devices(b.get("sender"), users)) | set(b["ack"]))}
+                      for b in history()],
             "now": time.time(),
         }
 
@@ -825,6 +903,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 for i, _, _, sender in queue_items():
                     if sender == b["user"] and b["devices"] and set(b["devices"]) <= set(acked(i)):
                         shutil.rmtree(os.path.join(QUEUE, i), ignore_errors=True)
+                        event("done", i)
                 names = "、".join(f"「{devs[d].get('label') or d}」" for d in b["devices"])
                 note = (f"已把你绑定到 Kindle {names}，发来的书会在它们亮屏联网时送过去。"
                         if b["devices"] else "已解除你和 Kindle 的绑定，发来的书会先存着。")
@@ -843,6 +922,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 save("users.json", users)
             elif action == "delete" and re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{8}", b.get("id", "")):
                 shutil.rmtree(os.path.join(QUEUE, b["id"]), ignore_errors=True)
+                event("delete", b["id"])
             else:
                 return self.send(400, b"bad request\n")
         self.send(200, b"ok\n")
@@ -889,8 +969,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if p == "/list":
             # 一行一本：id \t 字节数 \t 文件名（Kindle 端用 busybox sh 解析，不用 JSON）
-            seen_device(dev, self.headers.get("X-Real-IP") or self.client_address[0])
-            body = "".join(f"{i}\t{s}\t{n}\n" for i, n, s, _ in items_for(dev))
+            mine = items_for(dev)
+            seen_device(dev, self.headers.get("X-Real-IP") or self.client_address[0], len(mine))
+            body = "".join(f"{i}\t{s}\t{n}\n" for i, n, s, _ in mine)
             return self.send(200, body.encode())
         m = re.fullmatch(r"/file/([^/]+)", p)
         d = m and self.item_dir(m.group(1), dev)
@@ -898,6 +979,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send(404, b"not found\n")
         name = [n for n in os.listdir(d) if not n.startswith(".") and not n.endswith(".part")][0]
         f = os.path.join(d, name)
+        event("fetch", m.group(1), device=dev)
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(os.path.getsize(f)))
@@ -933,9 +1015,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     continue
                 Handler.delivered.setdefault(sender, {}).setdefault(dev, []).append(n)
                 done = set(acked(i)) | {dev}
+                event("ack", i, device=dev)
                 # 绑定的每台 Kindle 都取走了才删
                 if set(user_devices(sender, users)) <= done:
                     shutil.rmtree(d, ignore_errors=True)
+                    event("done", i)
                 else:
                     with open(os.path.join(d, ".acked"), "w") as f:
                         f.write("\n".join(sorted(done)))

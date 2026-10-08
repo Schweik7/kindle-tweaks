@@ -3,5 +3,7 @@
 URL=https://download.psyventures.cn/kindle
 # 服务器开了口令校验（/var/lib/kindle-wxsend/config.json 里 "auth": true）才需要填，值是 wxsend.py token 打印的那串
 TOKEN=
+# 同步时机：0 = 只在亮屏（出屏保）时同步（默认，最省电）；N = 另外在醒着时每 N 分钟同步一次
+INTERVAL=0
 # 书放到哪里；改成 /mnt/us/documents/微信传书 并开启「文件夹收藏夹」，就会自动归进同名收藏夹
 DIR=/mnt/us/documents
