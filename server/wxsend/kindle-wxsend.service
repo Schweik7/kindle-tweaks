@@ -1,0 +1,14 @@
+[Unit]
+Description=kindle-tweaks 微信传书（iLink 收书 + Kindle 拉取接口 127.0.0.1:8860）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/kindle-wxsend/wxsend.py serve
+Environment=WXSEND_DATA=/var/lib/kindle-wxsend
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

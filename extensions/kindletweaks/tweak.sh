@@ -9,6 +9,7 @@
 #   tweak.sh manga dir <序号>            按目录转换（序号是菜单生成时 mangaconv/dirs.txt 的行号）
 #   tweak.sh debugawake always|charging|off   调试模式：始终阻止 / 仅充电阻止 / 关闭深度休眠推迟
 #   tweak.sh libraryview on|off          主界面重载时默认进入收藏夹视图
+#   tweak.sh wxsend on|off|now           微信传书：亮屏自动同步开关 / 立即同步（配置 wxsend/config）
 # 补丁文件放在 files/：<系统文件名>.orig（本机原版）和 <系统文件名>.patched（电脑上生成）
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH
 EXT=/mnt/us/extensions/kindletweaks
@@ -406,6 +407,112 @@ libraryview_status() {
 	libraryview_injected && echo "on（注入，免重启）" || echo "on（屏保时重载 KPP）"
 }
 
+# 微信传书：VPS 上的 server/wxsend 收下微信里发来的书，这里拉到 documents
+WX=${EXT}/wxsend
+TAB=$(printf '\t')
+
+wxsend_note() { echo "$(date '+%m-%d %H:%M') $*" > ${WX}/status.txt; }
+
+# 本机设备码：第一次用时随机生成，写进 config。服务器按它分发书，管理页上用它认出这台 Kindle
+wxsend_device() {
+	d=$(sed -n 's/^DEVICE=\([A-Za-z0-9]*\).*/\1/p' ${WX}/config 2>/dev/null | head -1)
+	if [ ${#d} -lt 6 ]; then
+		d=$(tr -dc A-Z0-9 < /dev/urandom | head -c 8)
+		printf '\n# 本机设备码（自动生成），管理页上按它绑定\nDEVICE=%s\n' "${d}" >> ${WX}/config
+	fi
+	echo "${d}"
+}
+
+# 不覆盖已有的书：重名时加「 (2)」「 (3)」……
+wxsend_dest() {
+	d="$1/$2"
+	n=2
+	while [ -e "${d}" ]; do
+		d="$1/${2%.*} (${n}).${2##*.}"
+		n=$((n + 1))
+	done
+	echo "${d}"
+}
+
+wxsend_pull() {
+	[ -f ${WX}/config ] || { wxsend_note "缺 wxsend/config"; return 1; }
+	URL=""; TOKEN=""; DIR=/mnt/us/documents; DEVICE=""
+	. ${WX}/config
+	[ -n "${URL}" ] || { wxsend_note "config 里没填 URL"; return 1; }
+	DEVICE=$(wxsend_device)
+	Q="?device=${DEVICE}"
+	mkdir -p "${DIR}" /mnt/us/.wxsend-part
+	C="curl -fsS --connect-timeout 15"
+	# 服务器开了口令校验（config.json 的 auth）才需要 TOKEN
+	[ -n "${TOKEN}" ] && C="${C} -H X-Token:${TOKEN}"
+	# 系统自带的 CA 证书偏旧；有 certifi 的证书包就用它
+	CA=/mnt/us/python3/lib/python3.9/site-packages/certifi/cacert.pem
+	[ -f ${CA} ] && C="${C} --cacert ${CA}"
+	L=/tmp/wxsend.list
+	${C} -m 30 "${URL}/list${Q}" -o ${L} 2>/tmp/wxsend.err || { wxsend_note "连不上服务器：$(head -c 80 /tmp/wxsend.err)"; return 2; }
+	got=0
+	bad=0
+	while IFS="${TAB}" read -r id size name; do
+		[ -n "${id}" ] && [ -n "${name}" ] || continue
+		# 先下到 documents 外面，校验完再 mv 进去（同一分区，mv 是原子的），扫描器和 mangaconv 不会看到半截文件
+		P=/mnt/us/.wxsend-part/${id}
+		if ${C} -m 900 "${URL}/file/${id}${Q}" -o ${P} </dev/null 2>/dev/null && [ "$(wc -c < ${P})" = "${size}" ]; then
+			D=$(wxsend_dest "${DIR}" "${name}")
+			mv ${P} "${D}" && ${C} -m 30 -X POST "${URL}/ack/${id}${Q}" -o /dev/null </dev/null 2>/dev/null
+			got=$((got + 1))
+		else
+			rm -f ${P}
+			bad=$((bad + 1))
+		fi
+	done < ${L}
+	if [ ${got} -gt 0 ] || [ ${bad} -gt 0 ]; then
+		wxsend_note "取到 ${got} 本$([ ${bad} -gt 0 ] && echo "，${bad} 本下载失败（下次重试）")"
+	else
+		wxsend_note "同步正常，没有新书"
+	fi
+	[ ${bad} = 0 ]
+}
+
+wxsend() {
+	D=${WX}/kindletweaks-wxsend.conf
+	J=/etc/upstart/kindletweaks-wxsend.conf
+	case "$1" in
+		on)
+			[ -f ${WX}/config ] || { say "wxsend: 先把 wxsend/config.example 复制成 config 并填好"; return 1; }
+			mntroot rw
+			cp ${D} ${J}
+			chmod 644 ${J}
+			mntroot ro
+			start kindletweaks-wxsend >/dev/null 2>&1 || true
+			say "wxsend: on"
+			;;
+		off)
+			stop kindletweaks-wxsend >/dev/null 2>&1 || true
+			mntroot rw
+			[ -f ${J} ] && mv ${J} /tmp/kindletweaks-wxsend.conf.disabled
+			mntroot ro
+			say "wxsend: off"
+			;;
+		now)
+			wxsend_pull
+			;;
+		autopull)
+			# 后台任务调用。屏保中不拉；刚唤醒时 WiFi 还在重连，最多等 60 秒
+			case "$(lipc-get-prop com.lab126.powerd state 2>/dev/null)" in
+				*creen[Ss]aver* | *uspend*) return 0 ;;
+			esac
+			for i in 1 2 3 4 5 6; do
+				wxsend_pull
+				[ $? = 2 ] || return 0
+				sleep 10
+			done
+			;;
+	esac
+}
+
+wxsend_state() { [ -f /etc/upstart/kindletweaks-wxsend.conf ] && echo on || echo off; }
+wxsend_status() { head -c 120 ${WX}/status.txt 2>/dev/null | tr -d '"\\\n' || true; }
+
 label() {
 	case "$1" in
 		on) echo "已开启" ;;
@@ -477,8 +584,14 @@ EOF
 			{"name": "充电时不深度休眠", "priority": 3, "checked": $([ "$(debugawake_state)" = charging ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake charging"},
 			{"name": "关闭调试模式", "priority": 4, "checked": $([ "$(debugawake_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake off"}
 		]},
-		{"name": "升级固件后：全部补丁重新开启", "priority": 10, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
-		{"name": "全部补丁还原原版", "priority": 11, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
+		{"name": "微信传书 [$(label $(wxsend_state))]", "priority": 10, "items": [
+			{"name": "$(s=$(wxsend_status); echo "${s:-还没同步过}")（点此刷新）", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "立即同步（本机编号 $([ -f ${WX}/config ] && wxsend_device || echo 未配置)）", "priority": 2, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "wxsend now"},
+			{"name": "开启（亮屏时自动同步）", "priority": 3, "checked": $([ "$(wxsend_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "wxsend on"},
+			{"name": "关闭", "priority": 4, "checked": $([ "$(wxsend_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "wxsend off"}
+		]},
+		{"name": "升级固件后：全部补丁重新开启", "priority": 11, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
+		{"name": "全部补丁还原原版", "priority": 12, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
 		]
 	}
 	]
@@ -495,6 +608,7 @@ case "$1" in
 		echo "manga(auto): $(manga_state) $(manga_status)"
 		echo "libraryview(default collections): $(libraryview_status)"
 		echo "debugawake: $(debugawake_status)"
+		echo "wxsend: $(wxsend_state) $(wxsend_status)"
 		;;
 	menu)
 		menu
@@ -541,8 +655,15 @@ case "$1" in
 		screen "kindle-tweaks: manga convert $2"
 		menu
 		;;
+	wxsend)
+		wxsend $2
+		rc=$?
+		[ "$2" = autopull ] && exit ${rc}
+		screen "kindle-tweaks: wechat send $2 ($(grep -o '[0-9]* 本' ${WX}/status.txt 2>/dev/null | head -1 | tr -dc 0-9) new)"
+		menu
+		;;
 	*)
-		sed -n '2,9p' $0
+		sed -n '2,13p' $0
 		;;
 esac
 exit 0

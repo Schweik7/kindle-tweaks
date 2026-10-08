@@ -1,0 +1,7 @@
+# 复制为 config（同目录），填上你自建的服务地址（server/wxsend，见 docs/10）
+# 下面是作者自用的服务器，只用来说明格式；不保证可用，请自建
+URL=https://download.psyventures.cn/kindle
+# 服务器开了口令校验（/var/lib/kindle-wxsend/config.json 里 "auth": true）才需要填，值是 wxsend.py token 打印的那串
+TOKEN=
+# 书放到哪里；改成 /mnt/us/documents/微信传书 并开启「文件夹收藏夹」，就会自动归进同名收藏夹
+DIR=/mnt/us/documents

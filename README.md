@@ -20,6 +20,7 @@
 | 7 | 调试模式 | Kindle 进入深度休眠会断开 Wi-Fi/SSH；可选始终不深度休眠、仅充电时不深度休眠或关闭，屏保始终照常 | [docs/06-debug-awake.md](docs/06-debug-awake.md) |
 | 8 | 默认收藏夹视图 | Home 固定网格、图书馆筛选等操作会让界面回到「全部 + 网格」；进入屏保后，下次进入图书馆由注入 KPP 的小库瞬间恢复收藏夹视图（不重启、不白屏） | [docs/07-default-collections.md](docs/07-default-collections.md) |
 | 9 | 浏览器下载任意文件 | 体验版浏览器只许下载 .azw/.prc/.mobi/.txt，下载 epub、pdf 弹「文件类型无效」；放开后照常存到 documents，epub 由功能 5 自动转换 | [docs/08-browser-download.md](docs/08-browser-download.md) |
+| 10 | 微信传书 | 假注册设备用不了亚马逊的推送；在微信里把书发给 ClawBot 或企业微信「微信客服」，自建 VPS 收下，Kindle 亮屏联网时自动取走放进 documents，取走后微信回「已送达」；支持好友和多台 Kindle，在网页管理页上绑定 | [docs/10-wechat-send.md](docs/10-wechat-send.md) |
 
 ## KUAL 菜单
 
@@ -34,6 +35,7 @@ Kindle Tweaks
 ├─ 屏保开机随机排序（linkss） [已关闭] → 开启 / 关闭
 ├─ 默认收藏夹视图 [已开启]             → 开启 / 关闭（保留当前视图）
 ├─ 调试模式 [已关闭]                   → 查看当前状态 / 不深度休眠 / 充电时不深度休眠 / 关闭调试模式
+├─ 微信传书 [已开启]                   → 上次同步结果 / 立即同步 / 开启 / 关闭
 ├─ 升级固件后：全部补丁重新开启
 └─ 全部补丁还原原版
 ```
@@ -49,7 +51,9 @@ extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensio
   mangaconv/                漫画 epub → PDF、文字书 epub/md/docx → AZW3（mangaconv.py + docconv.py + upstart 任务模板）
   debugawake/               调试模式：充电时推迟深度休眠的 upstart 任务模板
   libraryview/              恢复收藏夹视图：upstart 任务模板 + 注入 KPP 的 libkt_libview.c
+  wxsend/                   微信传书：拉取用的 upstart 任务模板 + config.example
   files/                    补丁用的系统文件 *.orig / *.patched（自己生成，不进 git）
+server/wxsend/              微信传书的 VPS 端（wxsend.py + systemd 单元 + nginx location）
 tools/                      在电脑上生成 .patched
   patch_kpp.py              KPPMainApp.js.hbc（功能 1，需要 hermes-dec）
   patch_ksdk.py             libKSDKLibrary.so（功能 3，纯 Python）
@@ -219,6 +223,7 @@ sh $E/tweak.sh status                   # 所有功能的状态
 cat $E/tweak.log                        # 开关操作记录
 tail $E/foldercoll/sync.log             # 文件夹收藏夹
 tail $E/mangaconv/convert.log           # epub 转换
+cat $E/wxsend/status.txt                # 微信传书上次同步结果
 grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁出错时
 ```
 

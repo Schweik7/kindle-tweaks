@@ -18,3 +18,17 @@ extensions/kindletweaks/bin/
 dirs.txt
 dirs.count
 extensions/kindletweaks/debugawake/mode
+# 微信传书口令
+extensions/kindletweaks/wxsend/config
+# 微信传书服务端的数据目录（bot_token、企业微信 Secret、管理密码、用户绑定……）
+server/wxsend/data/
+account.json
+kf_peers.json
+kf_seen.json
+kf_cursor
+peers.json
+users.json
+devices.json
+kindle_token
+sync_buf
+server/**/config.json
