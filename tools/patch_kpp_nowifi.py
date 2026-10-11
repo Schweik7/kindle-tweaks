@@ -6,12 +6,26 @@
      画这一排的 render（testID 'quicksettings.widgetview'）开头改成 return null。
   2. 顶栏的购物车按钮：RenderTopNavBarButtons 里 KPP_STORE 分支的第一条指令改成 return null。
   3. 主页 ⋮ 菜单里的「Amazon Kids」「网页浏览器」「设置」：ContextMenuItem 前面插一段判断，
-     item.id 是 browser / settings / amazon_kids 就 return null（id 就是语言包键
-     chrome.header.overflow.menu.<id> 的最后一段）。快捷设置里的「全部设置」随 1 一起没了，
+     item.id 命中就 return null。快捷设置里的「全部设置」随 1 一起没了，
      这样界面上就进不了设置（无线、账户等都在里面）。函数变长了放不回原处，
      就把整个函数体搬到文件末尾（footer 前），改函数头里的偏移和长度，再改 fileLength。
      Hermes 的跳转都是相对地址，函数体整体平移不影响；函数里没有 switch 表和异常表（脚本会检查）。
-     字符串表里没有 'amazon_kids'，用「长度 11、第 0 位 'a'、第 6 位 '_'」认它。
+
+     ⋮ 菜单的条目由原生 KPPMainAppV2 造：
+       kpp::library::native::KPPChromeConfigUtils::BuildOverflowMenuConfig 用
+       KPPNavigation::NavigationActionFactory 的动作 id 建菜单，固定顺序是
+       goodreads / freetime / browser / settings / legal / kindleSpecialOffers
+       （另外还会按状态加 readingList、kindleUnlimited；「新建收藏夹」来自书库动作表）。
+       条目的 id 就是动作 id —— NavigationActionInterface::getId() 返回构造时第二个字符串，
+       getBrowserItem 传 'browser'、getSettingsItem 传 'settings'、
+       而「Amazon Kids」由 getFreeTimeItem 传的是 **'freetime'**（标签键才是
+       chrome.header.overflow.menu.amazon_kids）。所以三段判断是：
+         id === 'browser'  → 网页浏览器
+         id === 'settings' → 设置
+         id 是 'freetime'  → Amazon Kids
+       字符串表里没有 'freetime' 这个字面量（只有 freetime.conditionsofuse.landing.page），
+       所以对后者用 indexOf 判前缀：'freetime.conditionsofuse.landing.page'.indexOf(id) === 0
+       只对 'freetime' 及其真前缀成立。
 最后重新计算文件末尾的 SHA1。
 
 输入可以是原版，也可以是已经打了「云端弹窗」补丁（patch_kpp.py）的版本，两个补丁互不重叠。
@@ -28,6 +42,12 @@ from io import BytesIO
 
 from hermes_dec.parsers.hbc_bytecode_parser import parse_hbc_bytecode
 from hermes_dec.parsers.hbc_file_parser import HBCReader
+
+try:
+    # Windows 控制台默认 GBK，打印 '⋮' 会直接抛 UnicodeEncodeError
+    sys.stdout.reconfigure(errors="replace")
+except Exception:
+    pass
 
 src, dst = sys.argv[1], sys.argv[2]
 data = bytearray(open(src, "rb").read())
@@ -112,7 +132,10 @@ cand = [seq[k + 1] for k in range(len(seq) - 1)
 assert len(cand) == 1, f"找到 {len(cand)} 个 KPP_STORE 分支"
 overwrite_ret_null(fid, cand[0].original_pos + cand[0].arg1, "购物车按钮")
 
-# ---- 3. ⋮ 菜单里的 Amazon Kids / 网页浏览器 ----
+# ---- 3. ⋮ 菜单里的 Amazon Kids / 网页浏览器 / 设置 ----
+# 表里有现成字面量的直接比字符串；Amazon Kids（id 'freetime'）没有字面量，用前缀判断
+MENU_IDS = ("browser", "settings")
+FREETIME_PROBE = "freetime.conditionsofuse.landing.page"
 hits = funcs_named("ContextMenuItem")
 assert len(hits) == 1, f"找到 {len(hits)} 个 ContextMenuItem"
 fid = hits[0]
@@ -124,7 +147,7 @@ MARK = enc("LoadConstString", 2, sid("browser"))
 if h.offset >= reader.header.debugInfoOffset and MARK in body[:40]:
     print("⋮ 菜单：已经是补丁版")
 else:
-    # 寄存器 r0..r3 在原函数体开头都会被重新赋值；属性缓存号 0 = 不缓存
+    # 寄存器 r0..r4 在原函数体开头都会被重新赋值；属性缓存号 0 = 不缓存
     def gid(dst, obj, s):
         i = sid(s)
         return enc("GetByIdShort", dst, obj, 0, i) if i < 256 else enc("GetById", dst, obj, 0, i)
@@ -134,24 +157,21 @@ else:
         p += enc("LoadParam", 0, 1)                      # r0 = props
         p += gid(1, 0, "item")                           # r1 = props.item
         p += gid(1, 1, "id")                             # r1 = item.id
-        p += MARK                                        # r2 = 'browser'
-        p += enc("JStrictEqual", off_null - len(p), 1, 2)
-        p += enc("LoadConstString", 2, sid("settings"))  # r2 = 'settings'
-        p += enc("JStrictEqual", off_null - len(p), 1, 2)
-        p += gid(2, 1, "length")                         # r2 = id.length
-        p += enc("LoadConstUInt8", 3, 11)
-        p += enc("JStrictNotEqual", off_body - len(p), 2, 3)
-        for idx, ch in ((0, "a"), (6, "_")):             # id[0]=='a' && id[6]=='_'  → amazon_kids
-            p += enc("LoadConstUInt8", 3, idx)
-            p += enc("GetByVal", 2, 1, 3)
-            p += enc("LoadConstString", 3, sid(ch))
-            p += enc("JStrictNotEqual", off_body - len(p), 2, 3)
+        for name in MENU_IDS:
+            p += enc("LoadConstString", 2, sid(name))
+            p += enc("JStrictEqual", off_null - len(p), 1, 2)
+        p += enc("LoadConstString", 2, sid(FREETIME_PROBE))   # r2 = 'freetime.conditionsofuse...'
+        p += enc("GetById", 3, 2, 0, sid("indexOf"))
+        p += enc("Call2", 3, 3, 2, 1)                    # r3 = r2.indexOf(id)
+        p += enc("LoadConstUInt8", 4, 0)
+        p += enc("JStrictNotEqual", off_body - len(p), 3, 4)  # 非 0（不是前缀）→ 照常显示
         return p
 
     probe = build(0, 0)                                  # 先量长度，再填真实跳转距离
     off_null = len(probe)
     prologue = build(off_null, off_null + len(RET_NULL))
     assert len(prologue) == off_null
+    assert off_null < 127, f"跳转距离 {off_null} 超过 Addr8"
     newbody = prologue + RET_NULL + body
     assert len(newbody) < (1 << 15)
 
