@@ -3,11 +3,12 @@
 > **这份文档是写给"接手的 AI / 下一个会话的我自己"的。** 目标：读完这一份就能接着干，
 > 不用重新摸索、不用重跑已经做过的实测、不踩已经踩过的坑。
 >
-> 当前状态一句话：**墨水屏视频播放已经能用（A2 波形 ~8.6 fps）；只读侦察、WB 重采样实验、
-> 活跃 WRF/advanced 结构解析、low-first packing 证据链、以及"自造 1023 相长 LUT 上机实测"
-> 都已完成 —— 长 LUT 真的能跑（1023 相 = 12.1 秒）。卡点已从"能不能跑"变成两件新事：
-> ① mxcfb 索引与 blob mode 是置换表（不能按同名改）；② 驱动有约 7.5 秒完成超时。**
-> 下一步要造的是**带真实 action 的长 LUT**（全零 no-op 不驱动像素）。
+> 当前状态一句话：**墨水屏视频播放已经能用（A2 波形 ~8.6 fps）。EPDC 直驱这条路已经
+> 走到"能用自造波形驱动面板、并让画面内容跟着走"这一步：自造长 LUT 上机可用
+> （1023 相 = 12.1 秒）、action 极性与表索引布局已实测定案（index = current*32 + target）、
+> 直接写 working buffer 可达 1100~1300 帧/秒（比面板扫描富余 13 倍）。
+> 但肉眼结果是"一跳一跳、还不流畅"，且每次改 LUT 仍要重启（热注入工具已写好但未验证）。**
+> 下一步：① 查清热注入为什么卡住（跑通后就不必重启）；② 把原厂 A2 相位表重复拉长来换取流畅度。
 
 ---
 
@@ -21,8 +22,11 @@
 | 波形 blob 解码 / 扫描帧率 | ✅ **完成**：10 个标准 mode、14 个温度档；扫描基准 **54.155 Hz（⚠ 但与实测的 84.5 Hz 相位速率不符，见 4.6）** | [extensions/kindletweaks/tools/epdc_recon.py](../extensions/kindletweaks/tools/epdc_recon.py) |
 | 判定"EPDC 是否在同一 update 中重采样 WB" | ✅ **真机成立**：在飞更新中改一个像素 target，current 随新 target | 见第 5.3 节与第 6 节 P2 |
 | 自造长 LUT 上机实测 | ✅ **完成**：blob mode 7 改 1023 相 → **mxcfb 索引 10 耗时 12.111 秒**（1 相时 17.74 ms）；设备已恢复原厂 | 见第 4.6 节 |
+| 带真实 action 的自造 LUT | ✅ **真机驱动成功**：探针让整屏变黑，证明合成波形确实在给电极加压 | 见第 4.7 节 |
+| action 极性与 LUT 表索引布局 | ✅ **定案**：action 1=推黑、2=推白、0=不驱动；**表索引 = `current*32 + target`**（分析器原假设是转置的） | 见第 4.7 节 |
 | mxcfb 索引 ↔ blob mode 映射 | ⚠️ **确认是置换表，不是同名对应**（索引 10 → blob mode 7）；完整映射未解 | 见第 4.6 节 |
-| 自合成**带 action** 的长 LUT | ⬜ **未开始**（全零 no-op 不驱动像素，这一步才是真正推像素） | 见第 4.6 节"下一步" |
+| 长 LUT + 直接写 WB 的"视频" | 🟡 **能驱动、内容会跟随，但不流畅**：软件侧 1100~1300 帧/秒（富余 13 倍），肉眼看是"一跳一跳" | 见第 4.8 节 |
+| 热注入（不重启换 LUT） | 🟡 **工具已就绪，真机未验证**：`--show` 一次卡住未定位；跑通后就不必重启 | 见第 4.9 节 |
 | 写 EPDC 寄存器 | ❌ **仍未碰过，未经用户同意前不要碰** | 见第 7 节 |
 
 **顺带实测确认的两件事**（原先只是文档推断）：
@@ -383,6 +387,90 @@ imx_epdc_v2_fb:  LUT_status=0x00000000/0x00000000
 3. 然后才能做 P2 的完整版：**在长 LUT 运行期间改 WB 的 target**，看像素是否真的跟着走
    （P2 已证明硬件会重采样 WB，但那张表有真实 action；全零表下改 target 不会有任何效果）
 
+### 4.7 真机探针：action 极性与 LUT 表索引布局（修正了分析器的假设）
+
+§4.6 之后造了真正带 action 的 LUT（见 `tools/build_epdc_action_waveform.py`），
+上机前先用一个"无论索引布局如何都能判读"的探针定案：
+
+**探针表**：全部 1024 项 = action 1，只有扁平下标 **480..511** 改成 action 2。
+**屏幕内容**：三条竖带 —— 左 = 黑（target 0）、中 = 中灰（target 8）、右 = 白（target 15）。
+
+推理：驱动写 WB 时 `current` 恒为 0。
+- 若表索引是 **target 外层**（`target*32 + current`）：右带 → index 480 → action 2，左/中 → action 1
+  ⇒ 屏上应出现**两色**
+- 若表索引是 **current 外层**（`current*32 + target`）：三带 → index 0/8/15 → 全在 action 1 区
+  ⇒ **整屏一色**
+
+**真机结果（用户肉眼确认）：整屏全黑。** 于是三条结论同时成立：
+
+| 结论 | 说明 |
+| --- | --- |
+| ✅ **自造 LUT 真的驱动了面板** | 整屏全黑 = 我们的合成波形确实在给电极加压，整条流水线打通 |
+| ✅ **action 1 推向黑**（2 推向白） | 第三方资料的说法得到实测支持 |
+| 🔴 **表索引是 `current*32 + target`** | **不是**分析器 `pack_phase/unpack_phase` 假设的 `target*32 + current`（两者互为转置） |
+
+**后果与对策**：分析器的约定整体转置了。为了不再依赖布局，新工具生成表时**让动作只依赖
+`j % 32`**（分析器把 `matrix[src][dst]` 存在 `j = dst*32 + src`，所以生成时要用 `src`）——
+这样对"索引 = target"与"索引 = current*32 + target"两种解释都成立，见 `bit1` 图案。
+
+### 4.8 长 LUT + 直接写 WB 的视频演示（能驱动、能跟随，但还不流畅）
+
+**做法**：一次 mxcfb 10 更新启动自造的 512 相 LUT（≈6.06 s，**不等完成**），期间直接往
+`0x9C000000` 写每帧内容（`extensions/kindletweaks/tools/epdc_wb_video.py`）。
+
+**省直流的关键技巧**：自造表只对 `target=0`（推黑）与 `target=15`（推白）动作，其它值完全不驱动。
+于是"驱动一段时间后把 target 改回 8"就等于**停止驱动**，而 e-ink 像素会保持状态不变 ——
+**像素只在跃变期间被驱动**。
+
+**实测（软件侧完全不是瓶颈）**：
+
+| 项 | 数值 |
+| --- | --- |
+| 直接写 WB 的速率 | **1100 ~ 1300 帧/秒**（动画区 600 行、只写变化的列，平均 2 列/次） |
+| 面板扫描场 | ≈ 11.83 ms（≈84.5 Hz） |
+| 软件侧富余 | **约 13 倍** |
+
+**⚠ 踩过的坑（很重要）**：**驱动时长必须按墙钟时间算，不能按软件帧数。**
+第一版按"4 帧"驱动，而在 ~500 fps 下 4 帧只有 **8.5 ms**，还不到一个扫描场
+⇒ 屏上什么都不会发生。改成 `--drive-ms 120~170`（≈10~14 个扫描场）后才有可见效果。
+
+**肉眼结果（用户确认）**：黑带与白色竖条**都出现了**，竖条**确实是移动的**，
+但**一跳一跳、不连贯** —— 即"**能用我们的合成波形驱动面板并让内容跟随，但还没达到流畅**"。
+
+**为什么还不流畅（未解决，留给下一步）**：
+1. 每列被"满强度"硬驱动十几场 ⇒ 墨水近似"啪"地一次翻过去，边缘在空间上是量化的；
+2. 表里每一相的动作完全相同，没有任何**渐进/分步**控制；
+3. 面板真实的刷新粒度还没独立测准（§4.5 的 54.155 Hz 与实测 84.5 Hz 相位速率矛盾未解）。
+
+**值得先试的方向**：把**原厂 A2 的相位表整段重复**来拉长 LUT —— 那样每一相都是厂商验证过的、
+且**直流本来就平衡**的增量，比我们用"恒定强度"自己造的表更可能又稳又顺。
+
+### 4.9 热注入：不重启就换 LUT（工具已写好，真机尚未跑通）
+
+**这才是"不用反复重启"的正解** —— 前几轮每次改 LUT 都要重启，根本原因是波形由驱动在
+probe 时读一次文件；但既然：
+
+- 驱动**只搬不解析**（整块 memcpy 到 DDR，地址写进 `EPDC_WVADDR`）；
+- **EPDC 硬件每次跑 LUT 都自己去 DDR 走那张 mode 偏移表**；
+
+那么**直接改 DDR 里 mode 7 的 14 个温度指针**（本机在 `blob + 0x380`），指向我们自己的相位块，
+下一次更新就会用新 LUT —— 纯内存写、驱动不知情、**立刻生效、无需重启**。
+
+**相位块存哪**：working buffer 保留区尾部。保留区 `0x9C000000..0x9C4FFFFF` 共 5,242,880 B，
+WB 只用 `1264*1680*2 = 4,247,040` B（结束于 `0x9C40CE00`），**尾部 995,840 B 空闲**，
+本工具用 **`0x9C410000`**（512 相块只要 262,152 B）。
+
+**工具**：
+- `tools/emit_epdc_lut_block.py`（PC）：生成 `uint64 frame_count + frame_count×512B` 的相位块
+- `extensions/kindletweaks/tools/epdc_lut_inject.py`（设备）：`--show` / `--install block.bin` / `--restore`；
+  blob 物理地址从 dmesg 的 `allocate N byte @ XXXXXXXX for waveform` 取（**每次启动都会变**），
+  首次安装会把原厂 14 个指针存到 `/mnt/us/waveform_backup/mode7_ptr.json`
+
+**当前状态**：两个工具都已写好并提交，但**"热注入"这条路还没在真机验证** ——
+`--show` 首次运行**卡住了**（未定位原因，怀疑是 dmesg 读取或 `/dev/mem` mmap）。
+设备随后已完整恢复原厂并重启确认。**下一步应先查清这个卡住的原因**，一旦跑通，
+LUT 迭代就再也不用重启了。
+
 ---
 
 ## 5 EPDC v2 机构（纯资料调研结论，省得重查）
@@ -688,6 +776,12 @@ WRF payload 复制到 DMA，并设置 `LUT_DATA_SWIZZLE=NO_SWAP`；没有发现�
 | [tools/analyze_epdc_waveform.py](../tools/analyze_epdc_waveform.py) | PC 端 32×32/512 B phase 解析器：全表校验、双 nibble order、round-trip 与 CSV 导出 |
 | [tools/build_epdc_noop_waveform.py](../tools/build_epdc_noop_waveform.py) | PC 端纯离线生成器：验证 mode 7 全零模板，追加最长 1023 相 no-op 块并保持 advanced 数据不变；不连接设备 |
 | [tools/verify_noop_wrf.py](../tools/verify_noop_wrf.py) | PC 端**上机前验穿**：确认自造 WRF 只改了 mode 7 的 14 个指针 + 末尾追加块，其余逐字节不变；并解释"跨度不符"的两个正常例外 |
+| [tools/build_epdc_action_waveform.py](../tools/build_epdc_action_waveform.py) | PC 端**带真实 action** 的自造 mode 生成器（`all1`/`all2`/`probe`/`target`/`drive`/`bit1` 图案、duty 降直流） |
+| [tools/emit_epdc_lut_block.py](../tools/emit_epdc_lut_block.py) | PC 端：生成热注入用的**相位块**（`uint64 frame_count + frame_count×512B`），不涉及 WRF 容器 |
+| [tools/verify_epdc_wrf.py](../tools/verify_epdc_wrf.py) | PC 端通用验穿（任意自造 WRF vs 原厂，差异必须只落在目标 mode 指针与追加块） |
+| [extensions/kindletweaks/tools/epdc_lut_probe.py](../extensions/kindletweaks/tools/epdc_lut_probe.py) | 设备端**探针**：用三条竖带一次性判定 action 极性与表索引布局（见 4.7） |
+| [extensions/kindletweaks/tools/epdc_wb_video.py](../extensions/kindletweaks/tools/epdc_wb_video.py) | 设备端**长 LUT + 直接写 WB 的视频演示**（多轮重放、按墙钟时间驱动、省直流的"驱动后释放"） |
+| [extensions/kindletweaks/tools/epdc_lut_inject.py](../extensions/kindletweaks/tools/epdc_lut_inject.py) | 设备端**热注入**：只改 DDR 里 mode 7 的 14 个温度指针 + 把相位块写进保留区尾部，**不碰分区、不改寄存器、无需重启**（真机尚未验证） |
 | [extensions/kindletweaks/tools/measure_mode7.py](../extensions/kindletweaks/tools/measure_mode7.py) | 设备端：分模式计时（含自造长 LUT 的耗时判定），只用 64×64 小块，不碰 EPDC 寄存器 |
 | [extensions/kindletweaks/tools/sweep_modes.py](../extensions/kindletweaks/tools/sweep_modes.py) | 设备端：扫描 mxcfb 索引 0..17 的耗时，用来**反推 mxcfb 索引 ↔ blob mode 的置换表** |
 | [extensions/kindletweaks/tweak.sh](../extensions/kindletweaks/tweak.sh) | KUAL 菜单「墨水屏视频播放」（自动扫描 + 暂停/继续/停止 + 状态）；`fbvideo play/stop/toggle/state/status/menujson` |
@@ -713,15 +807,20 @@ WRF payload 复制到 DMA，并设置 `LUT_DATA_SWIZZLE=NO_SWAP`；没有发现�
    若"1 相 = 1 场"成立，则 §4.5 的算式需要修正（且 84.6 Hz 与 K4 的实测完全吻合）。
 5. **驱动的 7.5 秒完成超时** —— 已观测到触发与 `epdc_recover`，但**恢复流程到底做了什么、
    长 LUT 被中断时面板处于什么状态，没有查清**。走正常 mxcfb 路径时这是硬上限。
-6. **带真实 action 的长 LUT 尚未构造** —— 全零 no-op 只证明"能跑很久"；真正推像素需要
-   VPOS/VNEG action 且整段净直流为零。**action 数值语义仍只有第三方资料**（`1`=推向黑、`2`=推向白），
-   NXP 原文未取得。
-7. **单 LUT 硬件 frame 是否真的上限 1024** —— 1023 相能跑通（12.1 秒），所以上限 ≥1023；
+6. **带真实 action 的长 LUT 已能驱动面板，但"不流畅"的原因未解** —— 见 4.8。
+   候选：每列被满强度硬驱动十几场导致边缘空间量化 / 表里每相动作相同没有渐进控制 /
+   面板真实刷新粒度没测准。**优先试**：把原厂 A2 的相位表整段重复来拉长 LUT
+   （厂商验证过、且直流本来就平衡的增量）。
+7. **热注入为什么卡住** —— `epdc_lut_inject.py --show` 一次运行挂死，未定位
+   （怀疑 dmesg 读取或 `/dev/mem` mmap）。跑通它 = 以后改 LUT 不必重启。见 4.9。
+8. **单 LUT 硬件 frame 是否真的上限 1024** —— 1023 相能跑通（12.1 秒），所以上限 ≥1023；
    更长的（如 2048）未测。
-8. **`EPDC_LUT_STANDBY1/2`(0x1E0/0x1F0) 语义** —— 头文件有、驱动从不碰。
-9. **WB 重采样的精确截止点与粒度** —— P2 已证明等待 1.25 个扫描场后改 target 仍会生效，但
+9. **`EPDC_LUT_STANDBY1/2`(0x1E0/0x1F0) 语义** —— 头文件有、驱动从不碰。
+10. **WB 重采样的精确截止点与粒度** —— P2 已证明等待 1.25 个扫描场后改 target 仍会生效，但
    尚未测出每个场的采样相位、FIFO 预取深度及“离扫描到该像素多近”才来不及生效。
-10. **Amazon 的 `reserved-working-buffer` 私有补丁** —— 公开树里没有。
+11. **action nibble 的完整语义** —— 0/1/2 三个取值与极性已实测确证（4.7），
+   但第 4 位（最高位）是否有含义、以及 4-bit 与"32 状态"里那个上下文位的确切来源，仍未确定。
+12. **Amazon 的 `reserved-working-buffer` 私有补丁** —— 公开树里没有。
 
 ---
 
