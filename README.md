@@ -23,6 +23,7 @@
 | 10 | 微信传书 | 假注册设备用不了亚马逊的推送；在微信里把书发给 ClawBot 或企业微信「微信客服」，自建 VPS 收下，Kindle 亮屏联网时自动取走放进 documents，取走后微信回「已送达」；支持好友和多台 Kindle，在网页管理页上绑定 | [docs/10-wechat-send.md](docs/10-wechat-send.md) |
 | 11 | 常驻网页应用（WAF） | 越狱后能用 HTML+JS 写界面，但自己写的网页默认不是系统应用。把 `/mnt/us/webapps/<名字>/` 注册进 `appreg.db`，就成了能被启动器/脚本随时拉起的一等 WAF，拿到完整 `window.kindle`（开书、联网、发 lipc）；注册信息在持久分区，不依赖任何缓存，比 Mesquito 覆盖商店缓存的做法耐久 | [docs/16-webapp-waf.md](docs/16-webapp-waf.md) |
 | 12 | 墨水屏视频播放 | 绕开 X 直接写 framebuffer 逐帧刷屏，能在墨水屏上放视频（Bad Apple 实测可播）。A2 波形实测 8.6 fps（640×480）～6.3 fps（满宽 1264×948），**硬件天花板约 9.9 fps**；1bit 帧 + zlib 压缩，全长 Bad Apple 只有 9～16 MB | [docs/17-fbvideo-eink-video.md](docs/17-fbvideo-eink-video.md) |
+| 13 | 飞行模式开关 | 隐藏无线界面的补丁（`tools/patch_kpp_nowifi.py`：快捷设置那一排、顶栏购物车、⋮ 菜单里的网页浏览器/设置/Amazon Kids，以及状态栏的 Wi-Fi/飞行模式图标）装上后，界面上没有开关无线的入口了；在 KUAL 菜单里直接开/关飞行模式，走的是系统「飞行模式」小部件同一条路 —— lipc 属性 `com.lab126.cmd wirelessEnable`（1 = 无线开，0 = 无线关） | （菜单里直接切换） |
 
 ## KUAL 菜单
 
@@ -40,6 +41,7 @@ Kindle Tweaks
 ├─ 微信传书 [已开启]                   → 上次同步结果 / 立即同步 / 开启 / 关闭
 ├─ 常驻网页应用（WAF） [0 个已常驻]     → 自检 doctor / 重新安装全部 / 候选应用（安装并常驻 / 立即打开 / 卸载）
 ├─ 墨水屏视频播放 [0 个视频｜off]       → 停止播放 / 视频列表（选波形：A2 推荐 / DU / GC16）
+├─ 飞行模式 [已关闭]                     → 开启（关无线）/ 关闭（打开无线）
 ├─ 升级固件后：全部补丁重新开启（并重装常驻网页应用）
 └─ 全部补丁还原原版
 ```
@@ -63,6 +65,7 @@ extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensio
 server/wxsend/              微信传书的 VPS 端（wxsend.py + systemd 单元 + nginx location）
 tools/                      在电脑上生成 .patched
   patch_kpp.py              KPPMainApp.js.hbc（功能 1，需要 hermes-dec）
+  patch_kpp_nowifi.py       KPPMainApp.js.hbc：隐藏无线相关界面（快捷设置那一排、顶栏购物车、⋮ 菜单里的网页浏览器/设置/Amazon Kids），需要 hermes-dec
   patch_ksdk.py             libKSDKLibrary.so（功能 3，纯 Python）
   patch_mesquite.py         /usr/bin/mesquite（功能 9，纯 Python）
   pdf_fullscreen/build.py   3 个 Java jar（功能 4，需要 JDK 9+）
