@@ -905,8 +905,9 @@ fbvideo_stop() {
 # 每个视频一个子菜单：点开选波形（默认 A2）
 fbvideo_menu_items() {
 	n=5
-	sep=",
-"
+	# ⚠ sep 必须是「首个为空、其后为逗号」——调用方在上一项末尾已经有一个逗号，
+	# 这里若首项也给逗号就会拼出 `},,` 而让 menu.json 变成非法 JSON（KUAL 直接读不了）。
+	sep=""
 	for f in $(fbvideo_files); do
 		b=${f##*/}
 		b=${b%.ktvid}
@@ -917,6 +918,8 @@ fbvideo_menu_items() {
 		printf '{"name": "播放（A2，推荐：唯一快的真实波形）", "priority": 1, "exitmenu": true, "action": "%s/tweak.sh", "params": "fbvideo play %s A2"}, ' "${EXT}" "${f}"
 		printf '{"name": "播放（DU：更慢但不闪，~4fps）", "priority": 2, "exitmenu": true, "action": "%s/tweak.sh", "params": "fbvideo play %s DU"}, ' "${EXT}" "${f}"
 		printf '{"name": "播放（GC16：最干净最慢，~2.7fps）", "priority": 3, "exitmenu": true, "action": "%s/tweak.sh", "params": "fbvideo play %s GC16"}]}' "${EXT}" "${f}"
+		sep=",
+"
 	done
 	echo
 	[ "$(fbvideo_count)" = 0 ] && printf '\t\t\t\t{"name": "（没扫到视频）把 .ktvid 放进 %s", "priority": 5, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "menu"}\n' "${FB_DIRS}" "${EXT}"
@@ -1022,7 +1025,36 @@ $(fbvideo_menu_items)
 	]
 }
 EOF
-	} > ${EXT}/menu.json.new && mv ${EXT}/menu.json.new ${EXT}/menu.json
+	} > ${EXT}/menu.json.new
+	# ⚠ 生成后**必须**校验 JSON 再落地：非法的话 KUAL 会读不了这个扩展的整个菜单。
+	# 曾因 fbvideo_menu_items 的 sep 多打一个逗号拼出 `},,`，menu.json 非法 → KUAL 不工作。
+	# 校验不过就退回一个「最小可用菜单」（并留证据），保证 KUAL 永远有东西可点。
+	_menu_py=""
+	for _c in python3 /mnt/us/python3/bin/python3 /usr/bin/python3; do
+		command -v "${_c}" >/dev/null 2>&1 && { _menu_py="${_c}"; break; }
+	done
+	_menu_ok=true
+	if [ -n "${_menu_py}" ]; then
+		"${_menu_py}" -c 'import json,sys; json.load(open(sys.argv[1]))' ${EXT}/menu.json.new 2>/dev/null || _menu_ok=false
+	fi
+	if ${_menu_ok}; then
+		mv ${EXT}/menu.json.new ${EXT}/menu.json
+	else
+		mkdir -p /mnt/us/kindletweaks_backup 2>/dev/null
+		cp ${EXT}/menu.json.new /mnt/us/kindletweaks_backup/menu.json.bad 2>/dev/null
+		echo "$(date '+%m-%d %H:%M:%S') menu: 生成的 menu.json 不是合法 JSON，已保留最小可用菜单（坏文件存到 /mnt/us/kindletweaks_backup/menu.json.bad）" >> ${EXT}/tweak.log
+		cat > ${EXT}/menu.json <<MINEOF
+{
+	"items": [
+		{"name": "Kindle Tweaks", "priority": 1, "items": [
+			{"name": "⚠ 菜单生成出错（JSON 非法），点这里重试", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "坏文件在 /mnt/us/kindletweaks_backup/menu.json.bad", "priority": 2, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"}
+		]}
+	]
+}
+MINEOF
+	fi
+	rm -f ${EXT}/menu.json.new
 }
 
 case "$1" in
