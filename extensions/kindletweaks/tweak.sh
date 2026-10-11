@@ -1123,7 +1123,10 @@ $(webapp_menu_items)
 $(fbvideo_menu_items)
 		]},
 		{"name": "升级固件后：全部补丁重新开启（并重装常驻网页应用）", "priority": 15, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
-		{"name": "全部补丁还原原版", "priority": 16, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
+		{"name": "全部补丁还原原版（⚠ 要再点一次确认）", "priority": 16, "items": [
+			{"name": "⚠ 确认还原原版（功能 1/3/4/9 + 隐藏无线界面）", "priority": 1, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"},
+			{"name": "取消，什么都不做", "priority": 2, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"}
+		]}
 		]
 	}
 	]
