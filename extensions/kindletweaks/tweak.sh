@@ -10,6 +10,11 @@
 #   tweak.sh debugawake always|charging|off   调试模式：始终阻止 / 仅充电阻止 / 关闭深度休眠推迟
 #   tweak.sh libraryview on|off          主界面重载时默认进入收藏夹视图
 #   tweak.sh wxsend on|off|now           微信传书：亮屏自动同步开关 / 立即同步（配置 wxsend/config）
+#   tweak.sh webapp install|uninstall|launch|state <名字>   常驻网页应用（WAF）：安装并注册 / 卸载 / 打开 / 看状态
+#   tweak.sh webapp scan|list|doctor|restore               候选应用 / 已安装清单 / 自检 / 升级固件后重装
+#   tweak.sh fbvideo play <文件> [A2|DU|GC16]              墨水屏视频播放（后台放，屏幕由播放器接管）
+#   tweak.sh fbvideo toggle|pause|resume|restart           控制正在播的播放器（也能直接在设备上点触摸屏/按翻页键）
+#   tweak.sh fbvideo stop|state|status|menujson            停止 / 状态 / 在放哪个第几帧 / 子菜单 JSON
 # 补丁文件放在 files/：<系统文件名>.orig（本机原版）和 <系统文件名>.patched（电脑上生成）
 export PATH=/usr/sbin:/sbin:/usr/bin:/bin:$PATH
 EXT=/mnt/us/extensions/kindletweaks
@@ -513,6 +518,410 @@ wxsend() {
 wxsend_state() { [ -f /etc/upstart/kindletweaks-wxsend.conf ] && echo on || echo off; }
 wxsend_status() { head -c 120 ${WX}/status.txt 2>/dev/null | tr -d '"\\\n' || true; }
 
+# ---------------------------------------------------------------- 常驻网页应用（WAF）
+# 把 /mnt/us 下的 HTML+JS 应用注册成 appreg.db 里的一等 WAF，由 appmgrd 启动。
+#
+# 和 Mesquito 的区别：Mesquito 是覆盖「商店」的 HTML5 应用缓存来借到 WAF 上下文，
+# 商店一刷新缓存就没了（半持久）；这里是正规注册，注册信息在 /var/local/appreg.db，
+# 不依赖任何缓存，重启和缓存刷新都不影响（原理、实测与选型对比见 docs/16-webapp-waf.md）。
+#
+# 写法照抄设备上 com.lab126.adviewer 这类「独立 WAF」：
+#   handlerIds     一行      <id>
+#   properties     command        /usr/bin/mesquite -l <id> -c file://<安装目录>/
+#                  framework      （空）
+#                  unloadPolicy   unloadOnPause
+#   associations   application | none | false
+WA=${EXT}/webapp
+WA_TPL=${WA}/config.template.xml
+WA_LIST=${WA}/installed.txt          # 安装清单（在 /mnt/us，固件更新不会丢）
+WA_ROOTS="${WA} /mnt/us/webapps /mnt/us/apps"   # 内置示例 / 自己的应用 / Mesquito·KWebBrew 的应用
+WA_DST=/var/local/mesquite
+WA_PREFIX=ktweb-                     # 安装目录前缀，避免和系统 WAF 撞名
+WA_ID=com.kindletweaks.              # 应用 ID 前缀；卸载时只删这个前缀的行
+WA_BAK=/mnt/us/kindletweaks_backup
+
+# 名字只允许字母数字和 . _ -，杜绝路径穿越和 JSON 注入
+webapp_valid() {
+	case "$1" in
+		'' | . | .. | */* | *[!A-Za-z0-9._-]*) return 1 ;;
+	esac
+	return 0
+}
+
+webapp_src() {
+	for r in ${WA_ROOTS}; do
+		[ -d "${r}/$1" ] && { echo "${r}/$1"; return 0; }
+	done
+	return 1
+}
+
+# 从 manifest.json 取字段（Mesquito / KWebBrew 的格式）
+webapp_manifest() {
+	sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1/manifest.json" 2>/dev/null | head -1
+}
+
+# 用模板渲染 config.xml。名字来自 manifest.json，先滤掉会破坏 sed/XML/JSON 的字符
+webapp_config() {
+	d=$1
+	id=$2
+	slug=$3
+	[ -f ${WA_TPL} ] || return 1
+	n=$(webapp_manifest "${d}" name)
+	n=$(printf '%s' "${n}" | tr -d '&/\\"<>|')
+	[ -n "${n}" ] || n=${slug}
+	e=$(webapp_manifest "${d}" entrypoint)
+	case "${e}" in '' | */* | *..*) e=index.html ;; esac
+	sed -e "s|__APPID__|${id}|g" -e "s|__APPDIR__|${WA_PREFIX}${slug}|g" \
+		-e "s|__ENTRY__|${e}|g" -e "s|__NAME__|${n}|g" \
+		${WA_TPL} > "${d}/config.xml.new" || return 1
+	mv "${d}/config.xml.new" "${d}/config.xml"
+}
+
+webapp_list_add() { grep -qx "$1" ${WA_LIST} 2>/dev/null || echo "$1" >> ${WA_LIST}; }
+webapp_list_del() {
+	[ -f ${WA_LIST} ] || return 0
+	grep -vx "$1" ${WA_LIST} > ${WA_LIST}.new 2>/dev/null
+	mv ${WA_LIST}.new ${WA_LIST}
+}
+
+webapp_state() {
+	[ "$(sqlite3 -readonly /var/local/appreg.db \
+		"select count(*) from properties where handlerId='${WA_ID}$1' and name='command';" 2>/dev/null)" = 1 ] &&
+		echo on || echo off
+}
+
+webapp_count() {
+	n=$(sqlite3 -readonly /var/local/appreg.db \
+		"select count(*) from properties where handlerId like '${WA_ID}%' and name='command';" 2>/dev/null)
+	echo ${n:-0}
+}
+
+# 候选应用：名字|来源目录|是否已常驻
+webapp_scan() {
+	for r in ${WA_ROOTS}; do
+		[ -d "${r}" ] || continue
+		for d in "${r}"/*/; do
+			d=${d%/}
+			[ -f "${d}/index.html" ] || continue
+			s=${d##*/}
+			webapp_valid "${s}" || continue
+			echo "${s}|${r}|$(webapp_state ${s})"
+		done
+	done
+}
+
+# 清 WebKit 的 HTML5 应用缓存。<安装目录>/resource 就是 config.xml 里的 ApplicationCachePath。
+# 实测：改完 index.html 不清它，打开还是旧页面（这个坑很费时间，所以安装时无条件清）
+webapp_clearcache() {
+	rm -rf "${WA_DST}/${WA_PREFIX}$1/resource" "${WA_DST}/${WA_PREFIX}$1/.cache"
+}
+
+webapp_install() {
+	s=$1
+	webapp_valid "${s}" || { say "webapp: 名字非法：${s}"; return 1; }
+	src=$(webapp_src "${s}") || { say "webapp: 找不到应用目录 ${s}"; return 1; }
+	[ -f "${src}/index.html" ] || { say "webapp: ${src} 里没有 index.html"; return 1; }
+	id="${WA_ID}${s}"
+	dst="${WA_DST}/${WA_PREFIX}${s}"
+
+	# 第一次动 appreg.db 前先备份一次，出问题直接 cp 回去
+	if [ ! -f ${WA_BAK}/appreg.db.bak ]; then
+		mkdir -p ${WA_BAK}
+		cp /var/local/appreg.db ${WA_BAK}/appreg.db.bak && say "webapp: 已备份 appreg.db 到 ${WA_BAK}/"
+	fi
+
+	# 装文件：源目录自带的 config.xml 优先，没有才用模板生成
+	rm -rf "${dst}"
+	mkdir -p "${dst}"
+	cp -r "${src}/." "${dst}/" || { say "webapp: 复制文件失败"; return 1; }
+	rm -f "${dst}/config.xml.new"
+	[ -f "${dst}/config.xml" ] || webapp_config "${dst}" "${id}" "${s}" || { say "webapp: 渲染 config.xml 失败"; return 1; }
+	webapp_clearcache "${s}"
+	chown -R framework:javausers "${dst}" 2>/dev/null
+	find "${dst}" -type d -exec chmod 755 {} \; 2>/dev/null
+	find "${dst}" -type f -exec chmod 644 {} \; 2>/dev/null
+
+	sqlite3 /var/local/appreg.db "insert or ignore into handlerIds(handlerId) values('${id}');" || { say "webapp: 写 handlerIds 失败"; return 1; }
+	sqlite3 /var/local/appreg.db "insert or replace into properties(handlerId,name,value) values('${id}','command','/usr/bin/mesquite -l ${id} -c file://${dst}/');" || return 1
+	sqlite3 /var/local/appreg.db "insert or replace into properties(handlerId,name,value) values('${id}','framework','');" || return 1
+	sqlite3 /var/local/appreg.db "insert or replace into properties(handlerId,name,value) values('${id}','unloadPolicy','unloadOnPause');" || return 1
+	sqlite3 /var/local/appreg.db "insert or replace into associations(handlerId,interface,contentId,defaultAssoc) values('${id}','application','none','false');" || return 1
+	sync
+
+	n=$(sqlite3 -readonly /var/local/appreg.db "select count(*) from properties where handlerId='${id}';" 2>/dev/null)
+	if [ "${n}" = 3 ]; then
+		webapp_list_add "${s}"
+		say "webapp: ${s} 已安装并常驻（${id}）"
+	else
+		say "webapp: ${s} 注册后校验失败（properties 只有 ${n} 行），未记入安装清单"
+		return 1
+	fi
+}
+
+webapp_uninstall() {
+	s=$1
+	webapp_valid "${s}" || { say "webapp: 名字非法：${s}"; return 1; }
+	id="${WA_ID}${s}"
+	# 只删这个前缀的行，不碰系统 WAF
+	sqlite3 /var/local/appreg.db "delete from properties where handlerId='${id}';"
+	sqlite3 /var/local/appreg.db "delete from associations where handlerId='${id}';"
+	sqlite3 /var/local/appreg.db "delete from handlerIds where handlerId='${id}';"
+	sync
+	rm -rf "${WA_DST}/${WA_PREFIX}${s}"
+	rm -rf "/mnt/us/.active_content_sandbox/${id}"
+	webapp_list_del "${s}"
+	say "webapp: ${s} 已卸载（源目录保留）"
+}
+
+webapp_launch() {
+	s=$1
+	[ "$(webapp_state ${s})" = on ] || { say "webapp: ${s} 还没安装"; return 1; }
+	lipc-set-prop com.lab126.appmgrd start "app://${WA_ID}${s}/"
+	say "webapp: 启动 ${s}"
+}
+
+# 升级/重刷固件后重新装一遍（安装清单在 /mnt/us，不受影响）
+webapp_restore() {
+	[ -f ${WA_LIST} ] || { say "webapp: 没有安装记录"; return 0; }
+	n=0
+	while read -r s; do
+		[ -n "${s}" ] || continue
+		webapp_src "${s}" >/dev/null 2>&1 || { say "webapp: ${s} 的源目录没了，跳过"; continue; }
+		webapp_install "${s}" && n=$((n + 1))
+	done < ${WA_LIST}
+	say "webapp: 重新安装 ${n} 个"
+}
+
+webapp_doctor() {
+	echo "== 常驻网页应用（WAF）自检 =="
+	echo "sqlite3        : $(command -v sqlite3 2>/dev/null || echo 缺失)"
+	echo "mesquite       : $(ls -l /usr/bin/mesquite 2>/dev/null | awk '{print $5" 字节"}' || echo 缺失)"
+	echo "appmgrd 前台   : $(lipc-get-prop com.lab126.appmgrd activeApp 2>/dev/null || echo 查不到)"
+	echo "config 模板    : $([ -f ${WA_TPL} ] && echo 有 || echo "缺 ${WA_TPL}")"
+	echo "安装清单       : $([ -f ${WA_LIST} ] && echo "${WA_LIST}（$(grep -c . ${WA_LIST} 2>/dev/null) 项）" || echo 还没安装过)"
+	echo "appreg.db 备份 : $(ls -l ${WA_BAK}/appreg.db.bak 2>/dev/null | awk '{print $5" 字节"}' || echo 还没备份)"
+	echo
+	echo "-- 设备上现成的参考行（我们的写法就是照它来的）--"
+	sqlite3 -readonly /var/local/appreg.db "select handlerId||'  |  '||value from properties where handlerId='com.lab126.adviewer' and name='command';" 2>/dev/null
+	# 字段集合漂移检测：不盲抄参考 WAF 的行，但如果新固件给它加了字段，这里会立刻显出来
+	ref=com.lab126.adviewer
+	if [ "$(sqlite3 -readonly /var/local/appreg.db "select count(*) from properties where handlerId='${ref}';" 2>/dev/null)" != 0 ]; then
+		exp="command framework unloadPolicy"
+		got=$(sqlite3 -readonly /var/local/appreg.db "select name from properties where handlerId='${ref}' order by name;" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')
+		if [ "${got}" = "${exp}" ]; then
+			echo "字段集合与 ${ref} 一致：${got}"
+		else
+			echo "⚠ 字段集合与 ${ref} 不一致，新固件可能改了注册方式："
+			echo "    参考 WAF : ${got}"
+			echo "    我们写入 : ${exp}"
+		fi
+	fi
+	echo
+	echo "-- kindle-tweaks 已注册的应用 --"
+	sqlite3 -readonly /var/local/appreg.db "select handlerId||'  |  '||value from properties where handlerId like '${WA_ID}%' and name='command';" 2>/dev/null
+	echo
+	echo "-- 候选应用（名字 | 来源目录 | 状态）--"
+	webapp_scan | sed 's/|/  |  /g'
+	echo
+	echo "-- 应用数据 / 缓存目录 --"
+	ls -d /mnt/us/.active_content_sandbox/${WA_ID}* 2>/dev/null || echo "(无)"
+	echo
+	echo "-- 最近 mesquite 日志 --"
+	grep -iE "mesquite.*(error|fail)|cannot find callback function" /var/log/messages 2>/dev/null | tail -6
+}
+
+webapp() {
+	case "$1" in
+		install) webapp_install "$2" ;;
+		uninstall) webapp_uninstall "$2" ;;
+		launch) webapp_launch "$2" ;;
+		state) webapp_state "$2" ;;
+		clearcache)
+			webapp_clearcache "$2"
+			say "webapp: 已清 $2 的页面缓存"
+			;;
+		scan) webapp_scan ;;
+		restore) webapp_restore ;;
+		doctor) webapp_doctor ;;
+		list) cat ${WA_LIST} 2>/dev/null ;;
+	esac
+}
+
+# 「常驻网页应用」子菜单：每个候选应用一个子菜单
+webapp_menu_items() {
+	webapp_scan > /tmp/wa.scan 2>/dev/null
+	n=0
+	sep=""
+	while IFS='|' read -r s r st; do
+		[ -n "${s}" ] || continue
+		n=$((n + 1))
+		[ "${st}" = on ] && lbl="已常驻" || lbl="未安装"
+		[ "${r}" = "${WA}" ] && lbl="${lbl}·内置示例"
+		printf '%s\t\t\t\t{"name": "%s [%s]", "priority": %d, "items": [' "${sep}" "${s}" "${lbl}" ${n}
+		printf '{"name": "安装并常驻", "priority": 1, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "webapp install %s"}, ' "${EXT}" "${s}"
+		printf '{"name": "立即打开", "priority": 2, "exitmenu": false, "action": "%s/tweak.sh", "params": "webapp launch %s"}, ' "${EXT}" "${s}"
+		printf '{"name": "卸载（源目录保留）", "priority": 3, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "webapp uninstall %s"}]}' "${EXT}" "${s}"
+		sep=",
+"
+	done < /tmp/wa.scan
+	[ ${n} = 0 ] && printf '\t\t\t\t{"name": "没找到应用：把含 index.html 的目录放进 /mnt/us/webapps/", "priority": 1, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "menu"}' "${EXT}"
+	echo
+}
+
+# ---------------------------------------------------------------- 墨水屏视频播放（fbink）
+# 用 py-fbink 直接写 framebuffer 播放 .ktvid 帧序列（格式与转码见 tools/make_ktvid.py、docs/17）。
+#
+# 为什么视频走 fbink 而不是 WAF：视频要的是「快速局部刷新 + 可控波形」，
+# 只有直接操作 EPDC 才拿得到（实测 A2 波形 640x480 约 115ms/帧 = 8.6fps）；
+# WAF 的刷新时机归系统的 lab126_ligl.lua 管，拿不到这个速度。
+#
+# 注意：fbink 画的内容会被系统整体重绘冲掉（实测 restart kppmainapp 后消失），
+# 所以播放器播放期间自己压住屏保，停下来时切回主页让界面重绘。
+FB=${EXT}/fbvideo
+FB_PY=${FB}/play.py
+FB_LOG=${FB}/play.log
+FB_CTL=${FB}/ctl
+FB_STATE=${FB}/state
+FB_PY3=/mnt/us/python3/bin/python3
+FB_LIB=/mnt/us/python3/lib
+# 自动扫描这些目录里的 *.ktvid（不递归）。
+#
+# 坑：/mnt/us 是 Amazon 的 fsp(FUSE) 层，**大小写不敏感** ——
+# /mnt/us/videos 和 /mnt/us/Videos 是同一个目录（实测写一个小写路径的文件，大写路径立刻可见；
+# du 两块报的是同一份数据）。但 FUSE 对两种拼写会返回**不同的 inode**，
+# 所以按 inode 去重是无效的，反而会把同一个视频列两遍。
+# 结论：只用一个规范目录名，额外目录写进 ${FB}/dirs（空格或换行分隔）。
+FB_DIRS="/mnt/us/videos"
+[ -f ${FB}/dirs ] && FB_DIRS="${FB_DIRS} $(tr '\n' ' ' < ${FB}/dirs 2>/dev/null)"
+
+fbvideo_files() {
+	_seen=""
+	for d in ${FB_DIRS}; do
+		[ -d "$d" ] || continue
+		for f in "$d"/*.ktvid; do
+			[ -f "$f" ] || continue
+			# 兜底去重：同名 + 同大小 + 同 mtime 就当成同一个文件
+			# （正是大小写变体互相指向同一份数据时的情况）
+			_key=$(ls -l "$f" 2>/dev/null | awk '{print $5"_"$6"_"$7"_"$8}')
+			_key="${f##*/}|${_key}"
+			case " ${_seen} " in *" ${_key} "*) continue ;; esac
+			_seen="${_seen} ${_key}"
+			echo "$f"
+		done
+	done
+}
+
+fbvideo_pids() {
+	for p in /proc/[0-9]*; do
+		c=$( { tr '\0' ' ' < $p/cmdline; } 2>/dev/null )
+		case "$c" in *${FB_PY}*) echo "${p##*/}" ;; esac
+	done
+}
+
+# 状态：off（没进程）/ playing / paused（进程在，再看状态文件）
+fbvideo_state() {
+	[ -n "$(fbvideo_pids)" ] || { echo off; return; }
+	case "$(sed -n 's/^status=//p' ${FB_STATE} 2>/dev/null | head -1)" in
+		paused) echo paused ;;
+		*) echo playing ;;
+	esac
+}
+
+fbvideo_get() { sed -n "s/^$1=//p" ${FB_STATE} 2>/dev/null | head -1; }
+
+# 给菜单标题用的一行摘要
+fbvideo_label() {
+	case "$(fbvideo_state)" in
+		off) echo "未播放" ;;
+		paused) echo "已暂停 $(fbvideo_get frame)/$(fbvideo_get total)" ;;
+		*) echo "播放中 $(fbvideo_get frame)/$(fbvideo_get total)" ;;
+	esac
+}
+
+# 给「播放状态」和 SSH 用的一行摘要
+fbvideo_info() {
+	if [ "$(fbvideo_state)" = off ]; then
+		echo "当前没有在播放（扫描目录：${FB_DIRS}）"
+		return 0
+	fi
+	echo "$(fbvideo_state)  $(fbvideo_get name)  $(fbvideo_get frame)/$(fbvideo_get total) 帧  波形$(fbvideo_get waveform)  目标$(fbvideo_get fps)fps"
+}
+
+# 写控制命令（播放器读到就删）：pause / resume / toggle / stop / restart
+fbvideo_ctl() {
+	[ -n "$(fbvideo_pids)" ] || { say "fbvideo: 没有在播放"; return 1; }
+	printf '%s\n' "$1" > ${FB_CTL}
+}
+
+fbvideo_count() {
+	n=$(fbvideo_files | grep -c . 2>/dev/null)
+	echo ${n:-0}
+}
+
+fbvideo_play() {
+	f=$1
+	wf=${2:-A2}
+	[ -f "$f" ] || { say "fbvideo: 找不到 $f"; return 1; }
+	[ -f ${FB_PY} ] || { say "fbvideo: 缺 ${FB_PY}"; return 1; }
+	[ -x ${FB_PY3} ] || { say "fbvideo: 缺 python3（KUAL 的 python3 扩展）"; return 1; }
+	fbvideo_stop >/dev/null 2>&1
+	rm -f ${FB_CTL} ${FB_STATE}
+	# 后台放：KUAL 不能阻塞几分钟，播放期间屏幕由播放器接管。
+	# --ctl/--state 让它能被 KUAL 暂停/继续/停止，并把进度写出来给菜单显示。
+	nohup env LD_LIBRARY_PATH=${FB_LIB} PYTHONIOENCODING=utf-8 ${FB_PY3} ${FB_PY} "$f" \
+		--waveform ${wf} --gc-every 120 --ctl ${FB_CTL} --state ${FB_STATE} >> ${FB_LOG} 2>&1 &
+	say "fbvideo: 开始播放 ${f##*/}（波形 ${wf}；点屏幕暂停，翻页键停止）"
+}
+
+fbvideo_stop() {
+	pids=$(fbvideo_pids)
+	if [ -z "${pids}" ]; then
+		rm -f ${FB_CTL} ${FB_STATE}
+		say "fbvideo: 没有正在播放的任务"
+		return 0
+	fi
+	# 先礼后兵：让播放器自己收尾（恢复 preventScreenSaver、切回主页）
+	mkdir -p ${FB} 2>/dev/null
+	printf 'stop\n' > ${FB_CTL}
+	i=0
+	while [ ${i} -lt 6 ]; do
+		[ -z "$(fbvideo_pids)" ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	pids=$(fbvideo_pids)
+	if [ -n "${pids}" ]; then
+		for p in ${pids}; do kill ${p} 2>/dev/null; done
+		sleep 1
+		for p in $(fbvideo_pids); do kill -9 ${p} 2>/dev/null; done
+		# 播放器没来得及收尾时兜底
+		lipc-set-prop com.lab126.powerd preventScreenSaver 0 >/dev/null 2>&1
+		lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home >/dev/null 2>&1
+	fi
+	rm -f ${FB_CTL} ${FB_STATE}
+	say "fbvideo: 已停止播放"
+}
+
+# 每个视频一个子菜单：点开选波形（默认 A2）
+fbvideo_menu_items() {
+	n=5
+	sep=",
+"
+	for f in $(fbvideo_files); do
+		b=${f##*/}
+		b=${b%.ktvid}
+		b=$(printf '%s' "$b" | tr -d '"\\')
+		n=$((n + 1))
+		kb=$(( $(wc -c < "$f" 2>/dev/null || echo 0) / 1024 ))
+		printf '%s\t\t\t\t{"name": "%s (%d KB)", "priority": %d, "items": [' "${sep}" "${b}" ${kb} ${n}
+		printf '{"name": "播放（A2，推荐：唯一快的真实波形）", "priority": 1, "exitmenu": true, "action": "%s/tweak.sh", "params": "fbvideo play %s A2"}, ' "${EXT}" "${f}"
+		printf '{"name": "播放（DU：更慢但不闪，~4fps）", "priority": 2, "exitmenu": true, "action": "%s/tweak.sh", "params": "fbvideo play %s DU"}, ' "${EXT}" "${f}"
+		printf '{"name": "播放（GC16：最干净最慢，~2.7fps）", "priority": 3, "exitmenu": true, "action": "%s/tweak.sh", "params": "fbvideo play %s GC16"}]}' "${EXT}" "${f}"
+	done
+	echo
+	[ "$(fbvideo_count)" = 0 ] && printf '\t\t\t\t{"name": "（没扫到视频）把 .ktvid 放进 %s", "priority": 5, "refresh": true, "exitmenu": false, "action": "%s/tweak.sh", "params": "menu"}\n' "${FB_DIRS}" "${EXT}"
+}
+
 label() {
 	case "$1" in
 		on) echo "已开启" ;;
@@ -590,8 +999,24 @@ EOF
 			{"name": "开启（亮屏时自动同步）", "priority": 3, "checked": $([ "$(wxsend_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "wxsend on"},
 			{"name": "关闭", "priority": 4, "checked": $([ "$(wxsend_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "wxsend off"}
 		]},
-		{"name": "升级固件后：全部补丁重新开启", "priority": 11, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
-		{"name": "全部补丁还原原版", "priority": 12, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
+		{"name": "常驻网页应用（WAF） [$(webapp_count) 个已常驻]", "priority": 11, "items": [
+			{"name": "自检 doctor（sqlite3 / 参考行 / 日志）", "priority": 1, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "webapp doctor"},
+			{"name": "重新安装全部常驻应用（升级固件后用）", "priority": 2, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "webapp restore"},
+			{"name": "放置位置：/mnt/us/webapps/<名字>/index.html", "priority": 3, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "候选应用（点开可安装 / 打开 / 卸载）", "priority": 4, "items": [
+$(webapp_menu_items)
+			]}
+		]},
+		{"name": "墨水屏视频播放 [$(fbvideo_count) 个｜$(fbvideo_label)]", "priority": 12, "items": [
+			{"name": "暂停 / 继续（点一下切换）", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "fbvideo toggle"},
+			{"name": "停止播放", "priority": 2, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "fbvideo stop"},
+			{"name": "播放状态：$(fbvideo_info | tr -d '"\\')", "priority": 3, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "重新扫描视频目录", "priority": 4, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+			{"name": "── 下面点一个就播（自动扫描）──", "priority": 5, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
+$(fbvideo_menu_items)
+		]},
+		{"name": "升级固件后：全部补丁重新开启（并重装常驻网页应用）", "priority": 13, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
+		{"name": "全部补丁还原原版", "priority": 14, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
 		]
 	}
 	]
@@ -609,12 +1034,16 @@ case "$1" in
 		echo "libraryview(default collections): $(libraryview_status)"
 		echo "debugawake: $(debugawake_status)"
 		echo "wxsend: $(wxsend_state) $(wxsend_status)"
+		echo "webapp(WAF): $(webapp_count) 个已常驻$([ -f ${WA_LIST} ] && echo "，清单 $(grep -c . ${WA_LIST} 2>/dev/null) 项" || echo "")"
+		echo "fbvideo(墨水屏视频): $(fbvideo_label)，$(fbvideo_count) 个视频（扫描 ${FB_DIRS}）"
 		;;
 	menu)
 		menu
 		;;
 	all)
 		for u in ${UNITS}; do [ "$(state ${u})" = missing ] || set_unit ${u} $2; done
+		# on 的时候顺手把常驻网页应用重装一遍：升级固件后 /var/local 或 appreg.db 可能被重置
+		[ "$2" = on ] && webapp_restore
 		menu
 		do_restart
 		;;
@@ -660,6 +1089,40 @@ case "$1" in
 		rc=$?
 		[ "$2" = autopull ] && exit ${rc}
 		screen "kindle-tweaks: wechat send $2 ($(grep -o '[0-9]* 本' ${WX}/status.txt 2>/dev/null | head -1 | tr -dc 0-9) new)"
+		menu
+		;;
+	webapp)
+		webapp $2 $3
+		rc=$?
+		# doctor/scan/list 是给 SSH 看的，别弹菜单也别打屏幕
+		case "$2" in doctor | scan | list) exit ${rc} ;; esac
+		screen "kindle-tweaks: webapp $2 $3"
+		menu
+		;;
+	fbvideo)
+		case "$2" in
+			# 播放是长任务：后台跑并立刻返回，别让 KUAL 卡住，也别在视频上叠字
+			play)
+				fbvideo_play "$3" "$4"
+				exit 0
+				;;
+			stop) fbvideo_stop ;;
+			toggle | pause | resume | restart) fbvideo_ctl "$2" ;;
+			state)
+				fbvideo_state
+				exit 0
+				;;
+			status | info)
+				fbvideo_info
+				exit 0
+				;;
+			# 打印 KUAL 子菜单 JSON，方便在 SSH 上核对（别在 KUAL 里点）
+			menujson)
+				fbvideo_menu_items
+				exit 0
+				;;
+		esac
+		screen "kindle-tweaks: fbvideo $2"
 		menu
 		;;
 	*)

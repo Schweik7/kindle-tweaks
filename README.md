@@ -21,6 +21,8 @@
 | 8 | 默认收藏夹视图 | Home 固定网格、图书馆筛选等操作会让界面回到「全部 + 网格」；进入屏保后，下次进入图书馆由注入 KPP 的小库瞬间恢复收藏夹视图（不重启、不白屏） | [docs/07-default-collections.md](docs/07-default-collections.md) |
 | 9 | 浏览器下载任意文件 | 体验版浏览器只许下载 .azw/.prc/.mobi/.txt，下载 epub、pdf 弹「文件类型无效」；放开后照常存到 documents，epub 由功能 5 自动转换 | [docs/08-browser-download.md](docs/08-browser-download.md) |
 | 10 | 微信传书 | 假注册设备用不了亚马逊的推送；在微信里把书发给 ClawBot 或企业微信「微信客服」，自建 VPS 收下，Kindle 亮屏联网时自动取走放进 documents，取走后微信回「已送达」；支持好友和多台 Kindle，在网页管理页上绑定 | [docs/10-wechat-send.md](docs/10-wechat-send.md) |
+| 11 | 常驻网页应用（WAF） | 越狱后能用 HTML+JS 写界面，但自己写的网页默认不是系统应用。把 `/mnt/us/webapps/<名字>/` 注册进 `appreg.db`，就成了能被启动器/脚本随时拉起的一等 WAF，拿到完整 `window.kindle`（开书、联网、发 lipc）；注册信息在持久分区，不依赖任何缓存，比 Mesquito 覆盖商店缓存的做法耐久 | [docs/16-webapp-waf.md](docs/16-webapp-waf.md) |
+| 12 | 墨水屏视频播放 | 绕开 X 直接写 framebuffer 逐帧刷屏，能在墨水屏上放视频（Bad Apple 实测可播）。A2 波形实测 8.6 fps（640×480）～6.3 fps（满宽 1264×948），**硬件天花板约 9.9 fps**；1bit 帧 + zlib 压缩，全长 Bad Apple 只有 9～16 MB | [docs/17-fbvideo-eink-video.md](docs/17-fbvideo-eink-video.md) |
 
 ## KUAL 菜单
 
@@ -36,7 +38,9 @@ Kindle Tweaks
 ├─ 默认收藏夹视图 [已开启]             → 开启 / 关闭（保留当前视图）
 ├─ 调试模式 [已关闭]                   → 查看当前状态 / 不深度休眠 / 充电时不深度休眠 / 关闭调试模式
 ├─ 微信传书 [已开启]                   → 上次同步结果 / 立即同步 / 开启 / 关闭
-├─ 升级固件后：全部补丁重新开启
+├─ 常驻网页应用（WAF） [0 个已常驻]     → 自检 doctor / 重新安装全部 / 候选应用（安装并常驻 / 立即打开 / 卸载）
+├─ 墨水屏视频播放 [0 个视频｜off]       → 停止播放 / 视频列表（选波形：A2 推荐 / DU / GC16）
+├─ 升级固件后：全部补丁重新开启（并重装常驻网页应用）
 └─ 全部补丁还原原版
 ```
 
@@ -52,6 +56,9 @@ extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensio
   debugawake/               调试模式：充电时推迟深度休眠的 upstart 任务模板
   libraryview/              恢复收藏夹视图：upstart 任务模板 + 注入 KPP 的 libkt_libview.c
   wxsend/                   微信传书：拉取用的 upstart 任务模板 + config.example
+  webapp/                   常驻网页应用（WAF）：config.template.xml + sample/ 自检示例
+  fbvideo/                  墨水屏视频播放：play.py（Pillow + py-fbink 逐帧刷屏）
+  tools/epdc_recon.py       EPDC v2 只读侦察（寄存器 / 扫描帧率 / 波形 blob 解码；危险操作已按事故加固）
   files/                    补丁用的系统文件 *.orig / *.patched（自己生成，不进 git）
 server/wxsend/              微信传书的 VPS 端（wxsend.py + systemd 单元 + nginx location）
 tools/                      在电脑上生成 .patched
@@ -60,7 +67,22 @@ tools/                      在电脑上生成 .patched
   patch_mesquite.py         /usr/bin/mesquite（功能 9，纯 Python）
   pdf_fullscreen/build.py   3 个 Java jar（功能 4，需要 JDK 9+）
   build_ebook_converters.py 从固定源码构建 boko + Kindling ARMv7 静态版（功能 5）
+  gen_lipc_catalog.py       从 `lipc-probe -a -v` 的转储重新生成 docs/11 的服务索引与 docs/12
+  make_ktvid.py             视频/GIF/图片序列 → .ktvid 帧序列（缩放 + 抖动成 1bit + zlib 压缩）
+  analyze_epdc_waveform.py  EPDC 波形 blob 解析（32×32 state / 每相 512 B / 双 nibble order）
+  build_epdc_noop_waveform.py  离线生成"1023 相全零 no-op"WRF（纯离线，不连设备）
+  verify_noop_wrf.py        上机前验穿自造 WRF：确认除该改的地方外逐字节不变
 docs/                       原理、排查过程、新固件上怎么重做
+  01..08、10                每个功能的实现与排查记录
+  09-lab126-internals.md    在真机上摸清的系统结构（进程、upstart、lipc、文件、注入）
+  11-lipc-and-services.md   lipc 规则 + 92 个 com.lab126 服务索引 + 常用服务详解
+  12-lipc-service-catalog.md 全部服务的完整属性表
+  13-kindle-system-reference.md  appreg.db / cc.db / 调试命令 / 启动流程 / 机型代号 / 固件
+  14-kindle-homebrew-and-dev.md  hotfix / Scriptlets / KPM / 原生开发 / 窗口标题
+  15-wafs-and-mesquite.md   WAF、config.xml 规范与 window.kindle API
+  16-webapp-waf.md         常驻网页应用（WAF）功能；Mesquito/KWebBrew 对比与 UI 方案选型
+  17-fbvideo-eink-video.md  墨水屏视频播放：.ktvid 格式、波形与帧率实测、屏幕适配取舍、为什么不能更快
+  18-epdc-recon-and-handover.md  EPDC v2 侦察（含**自造 1023 相长 LUT 上机实测 = 12.1 秒**）+ **工作交接**（现状、待办、雷区）
 ```
 
 > ⚠ 本仓库**不包含任何亚马逊的原始文件或补丁后的文件**。补丁都是从你自己机器上提取的文件生成的。
@@ -140,7 +162,9 @@ scp *.orig *.patched pdf-out/* root@<kindle-ip>:$F/
 - **发现更多接口**：
   - 系统服务之间通过 lipc 通信。`lipc-probe -l` 列出所有服务；`lipc-probe -v com.lab126.powerd` 列出某个服务的属性和当前值（r 可读 / w 可写）。`lipc-probe -a` 会探测全部服务，输出很长。
   - 系统日志在 `/var/log/messages`。
-  - 进程依赖、lipc 服务、appmgrd、关键文件、输入设备等系统内部知识见 [docs/09-lab126-internals.md](docs/09-lab126-internals.md)。
+  - 进程依赖、lipc 服务、appmgrd、关键文件、输入设备等系统内部知识见 [docs/09](docs/09-lab126-internals.md)。
+  - lipc 的规则、92 个 `com.lab126.*` 服务的索引和常用服务详解见 [docs/11](docs/11-lipc-and-services.md)，逐个服务的完整属性表见 [docs/12](docs/12-lipc-service-catalog.md)。
+  - `appreg.db`（什么文件由什么程序处理）、搜索栏调试命令、开机流程、机型代号见 [docs/13](docs/13-kindle-system-reference.md)。
 
 ### 常用命令
 
@@ -231,10 +255,12 @@ grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁
 
 系统分区会被整个替换，所以补丁和自动同步的开机任务都会失效。`extensions/kindletweaks/` 在用户分区，不受影响。
 
-- **固件版本不变**：KUAL →「升级固件后：全部补丁重新开启」，再在「文件夹收藏夹」里重新「开启自动同步」、在「大漫画 epub 转 PDF」里重新「开启」。
+- **固件版本不变**：KUAL →「升级固件后：全部补丁重新开启（并重装常驻网页应用）」，再在「文件夹收藏夹」里重新「开启自动同步」、在「大漫画 epub 转 PDF」里重新「开启」。
+  常驻网页应用的**安装清单在 `/mnt/us/extensions/kindletweaks/webapp/installed.txt`**，固件更新不会丢，所以那一步会自动把它们重装回 `appreg.db`；也可以单独点「常驻网页应用」→「重新安装全部常驻应用」。
 - **固件版本变了**：菜单里会显示「文件不匹配」，脚本不会写入。
   1. 用新固件的文件重新生成 `.orig` / `.patched`。
   2. 如果生成脚本找不到特征，按 docs 里的手动方法重新定位。
+  3. 新版固件可能改动了 `appreg.db` 的结构或 WAF 的加载方式，常驻网页应用若失效，先跑「常驻网页应用」→「自检 doctor」。
 
 ## 风险与救砖
 
@@ -248,8 +274,31 @@ grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁
 
 请自行承担风险。
 
+## 参考文档
+
+`docs/` 里的 01–10 是每个功能的实现与排查记录；09 和 11–15 是系统性参考资料，改新功能时先查这几篇。
+
+| 文档 | 内容 |
+|---|---|
+| [09 系统内部笔记](docs/09-lab126-internals.md) | 在 Oasis 3 / 5.15.1.1 真机上摸清的进程、upstart、lipc、文件与数据库、输入设备、LD_PRELOAD |
+| [11 lipc 与 com.lab126 服务](docs/11-lipc-and-services.md) | lipc 与 DBus 的对应、`get/set/Int/Str/Has` 命名规则、事件发现方法、92 个服务索引、常用服务详解 |
+| [12 lipc 服务与属性总表](docs/12-lipc-service-catalog.md) | 全部服务逐个列出属性、类型、读写权限与示例值 |
+| [13 系统参考资料](docs/13-kindle-system-reference.md) | 分区布局、`appreg.db`、`cc.db`、搜索栏调试命令、越狱改了什么、upstart 启动流程、机型代号表、固件与 OTA |
+| [14 自制软件与原生开发](docs/14-kindle-homebrew-and-dev.md) | hotfix、Scriptlets、KPM 打包、koxtoolchain + Kindle SDK + Meson、Awesome WM 窗口标题规范 |
+| [15 WAF 与 Mesquite](docs/15-wafs-and-mesquite.md) | WAF 目录结构、`config.xml` 逐节规范、`window.kindle` JS API 与枚举 |
+| [16 常驻网页应用与 UI 选型](docs/16-webapp-waf.md) | 怎么让 HTML+JS 应用永久常驻（`appreg.db` 注册机制、实测证据、排错），以及 Mesquito/KWebBrew 对比和「越狱 Kindle 上写 UI 该选哪条路」的实测数据 |
+| [17 墨水屏视频播放](docs/17-fbvideo-eink-video.md) | `.ktvid` 帧序列格式与转码、A2/DU4 波形实测（含 DU4 这个坑）、面积与帧率的取舍模型、与 K4 逐像素直驱方案的对比 |
+| [18 EPDC 只读侦察与交接](docs/18-epdc-recon-and-handover.md) | EPDC v2 寄存器表与 LUT/DDR 布局、真机只读侦察结果（working buffer、波形 blob 地址）、**下一步待办与雷区**（接手前必读） |
+
+11–15 是参考 [KindleModding Wiki](https://kindlemodding.org/)（CC BY-NC 4.0）整理并**重新撰写**的，不是逐字复制。
+其中的事实数据（服务名、属性、机型表）都来自设备取证——服务与属性出自 wiki 作者机器上的 `lipc-probe -a -v` 转储，
+机型表出自 KindleTool；本仓库在 Oasis 3 / 5.15.1.1 上实测过的部分都单独标注了「本机实测」。
+换机型或换固件后，用 `tools/gen_lipc_catalog.py` 重新生成 11、12 两篇。
+
 ## 致谢
 
+- [KindleModding Wiki](https://github.com/KindleModding/kindlemodding.github.io)：docs/11–15 的资料主要来源，CC BY-NC 4.0。
+- [KindleTool](https://github.com/KindleModding/KindleTool)：docs/13 的机型表与 OTA 知识。
 - [LibrarianSync](https://github.com/NiLuJe/librariansync)：ccat `/change` 接口与 AuthToken。
 - [kindle-auto-collections](https://github.com/poketjomon/kindle-auto-collections)：cc.db 结构。
 - MobileRead [t=357149](https://www.mobileread.com/forums/showthread.php?t=357149)：「云端不可用」弹窗的来源分析。
@@ -259,3 +308,7 @@ grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁
 ## License
 
 GPL-3.0-or-later（见 [LICENSE](LICENSE)）。`kcc_lite.py` 移植自 KCC 的 GPLv3 代码，所以整个仓库从 MIT 改为 GPL。
+
+> ⚠ `docs/11`–`docs/15` 是对 [KindleModding Wiki](https://kindlemodding.org/)（**CC BY-NC 4.0**）的
+> 整理与重新表述，内容为事实性的技术资料，未逐字复制原文。若要把这几篇文档单独再分发或用于商业用途，
+> 需同时遵守 CC BY-NC 4.0 的署名与非商业条款。
