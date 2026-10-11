@@ -5,7 +5,7 @@
 #   tweak.sh <popup|collview|pdffull|browserdl|all> on|off   开关系统文件补丁
 #   tweak.sh coll sync|on|off|purge      文件夹收藏夹：立即同步 / 开机自动同步 / 关闭 / 删除生成的收藏夹
 #   tweak.sh ssrandom on|off             linkss 屏保开机随机排序
-#   tweak.sh airplane on|off             飞行模式（on = 关无线）
+#   tweak.sh airplane on|off             飞行模式（KUAL 菜单里叫「泡面模式」；on = 关无线）
 #   tweak.sh manga on|off|now            epub 自动转换（大漫画充电→PDF，文字书传完→AZW3）：自动转换开关 / 立即转换
 #   tweak.sh manga dir <序号>            按目录转换（序号是菜单生成时 mangaconv/dirs.txt 的行号）
 #   tweak.sh debugawake always|charging|off   调试模式：始终阻止 / 仅充电阻止 / 关闭深度休眠推迟
@@ -262,14 +262,16 @@ ssrandom() {
 	say "ssrandom: $1"
 }
 
-# 飞行模式（无线开关）。隐藏无线界面的补丁（tools/patch_kpp_nowifi.py）会把快捷设置里
-# 那一排按钮（含飞行模式）一起去掉，界面上就没有开关无线的入口了，所以放到 KUAL 菜单里。
+# 飞行模式（无线开关），KUAL 菜单里叫「泡面模式」。隐藏无线界面的补丁
+# （tools/patch_kpp_nowifi.py）会把快捷设置里那一排按钮（含飞行模式）一起去掉，
+# 界面上就没有开关无线的入口了，所以放到 KUAL 菜单里。
 # 走的是 KPP 快捷设置里飞行模式小部件同一条路（反汇编 /app/bin/KPPMainAppV2 得到的结论）：
 #   KPPSettings::QuickSettings::AirplaneWidgetController::execute
 #     → ConnectionManagerServiceProvider::toggleWirelessConnection
 #     → lipc set com.lab126.cmd wirelessEnable
 # 属性 1 = 无线开，0 = 无线关（飞行模式）；读同一个属性拿当前状态。
 # ⚠ 关无线会同时断掉 WiFi 上的 SSH（USB 网的 SSH 不受影响）。
+# 命令名保持 airplane（SSH 用），只有菜单项显示成「泡面模式」。
 AIRPLANE_SVC=com.lab126.cmd
 airplane_raw() { lipc-get-prop -i ${AIRPLANE_SVC} wirelessEnable 2>/dev/null; }
 airplane_state() { [ "$(airplane_raw)" = 0 ] && echo on || echo off; }
@@ -281,7 +283,7 @@ airplane() {
 		*) say "airplane: 用法 airplane on|off"; return 1 ;;
 	esac
 	if [ "$(airplane_raw)" = "${want}" ]; then
-		say "airplane: 已经是 $(label $(airplane_state))"
+		say "airplane: 已经$(label $(airplane_state))"
 		return 0
 	fi
 	lipc-set-prop -i ${AIRPLANE_SVC} wirelessEnable ${want} || { say "airplane: 写 wirelessEnable 失败"; return 1; }
@@ -293,7 +295,7 @@ airplane() {
 		i=$((i + 1))
 	done
 	[ "$(airplane_raw)" = "${want}" ] || { say "airplane: 20 秒内没切成 ${want}（当前 $(airplane_raw)）"; return 1; }
-	[ "${want}" = 0 ] && say "airplane: 飞行模式已开启（无线关，SSH 会断）" || say "airplane: 飞行模式已关闭（无线开）"
+	[ "${want}" = 0 ] && say "airplane: 已开启（离线）" || say "airplane: 已关闭（联网）"
 }
 
 coll_state() { [ -f /etc/upstart/foldercoll.conf ] && echo on || echo off; }
@@ -1020,7 +1022,7 @@ $(manga_dir_items)
 		]},
 EOF
 		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 7 "关闭（固定顺序，开机更快）"
-		toggle "飞行模式" "$(airplane_state)" airplane 13 "关闭（打开无线）"
+		toggle "泡面模式" "$(airplane_state)" airplane 13 "关闭"
 		cat <<EOF
 		{"name": "默认收藏夹视图 [$(label $(libraryview_state))]", "priority": 8, "items": [
 			{"name": "开启（进入屏保时校正）", "priority": 1, "checked": $([ "$(libraryview_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview on"},

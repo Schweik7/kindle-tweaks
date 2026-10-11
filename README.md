@@ -23,7 +23,7 @@
 | 10 | 微信传书 | 假注册设备用不了亚马逊的推送；在微信里把书发给 ClawBot 或企业微信「微信客服」，自建 VPS 收下，Kindle 亮屏联网时自动取走放进 documents，取走后微信回「已送达」；支持好友和多台 Kindle，在网页管理页上绑定 | [docs/10-wechat-send.md](docs/10-wechat-send.md) |
 | 11 | 常驻网页应用（WAF） | 越狱后能用 HTML+JS 写界面，但自己写的网页默认不是系统应用。把 `/mnt/us/webapps/<名字>/` 注册进 `appreg.db`，就成了能被启动器/脚本随时拉起的一等 WAF，拿到完整 `window.kindle`（开书、联网、发 lipc）；注册信息在持久分区，不依赖任何缓存，比 Mesquito 覆盖商店缓存的做法耐久 | [docs/16-webapp-waf.md](docs/16-webapp-waf.md) |
 | 12 | 墨水屏视频播放 | 绕开 X 直接写 framebuffer 逐帧刷屏，能在墨水屏上放视频（Bad Apple 实测可播）。A2 波形实测 8.6 fps（640×480）～6.3 fps（满宽 1264×948），**硬件天花板约 9.9 fps**；1bit 帧 + zlib 压缩，全长 Bad Apple 只有 9～16 MB | [docs/17-fbvideo-eink-video.md](docs/17-fbvideo-eink-video.md) |
-| 13 | 飞行模式开关 | 隐藏无线界面的补丁（`tools/patch_kpp_nowifi.py`：快捷设置那一排、顶栏购物车、⋮ 菜单里的网页浏览器/设置/Amazon Kids，以及状态栏的 Wi-Fi/飞行模式图标）装上后，界面上没有开关无线的入口了；在 KUAL 菜单里直接开/关飞行模式，走的是系统「飞行模式」小部件同一条路 —— lipc 属性 `com.lab126.cmd wirelessEnable`（1 = 无线开，0 = 无线关） | （菜单里直接切换） |
+| 13 | 隐藏无线界面 + 泡面模式开关 | 未注册的机器本来就不该联网，界面上那一排无线入口很碍事：补丁把下拉快捷设置那一排、顶栏购物车、⋮ 菜单里的「网页浏览器」「设置」「Amazon Kids」都去掉，状态栏的 Wi-Fi / 飞行模式 / WAN 图标也换成空白；随后把无线开关放进 KUAL（菜单里叫「泡面模式」，走系统飞行模式小部件同一个 lipc 属性 `com.lab126.cmd wirelessEnable`，1 = 无线开，0 = 无线关） | [docs/19-hidden-wireless.md](docs/19-hidden-wireless.md) |
 
 ## KUAL 菜单
 
@@ -41,7 +41,7 @@ Kindle Tweaks
 ├─ 微信传书 [已开启]                   → 上次同步结果 / 立即同步 / 开启 / 关闭
 ├─ 常驻网页应用（WAF） [0 个已常驻]     → 自检 doctor / 重新安装全部 / 候选应用（安装并常驻 / 立即打开 / 卸载）
 ├─ 墨水屏视频播放 [0 个视频｜off]       → 停止播放 / 视频列表（选波形：A2 推荐 / DU / GC16）
-├─ 飞行模式 [已关闭]                     → 开启（关无线）/ 关闭（打开无线）
+├─ 泡面模式 [已关闭]                     → 开启 / 关闭
 ├─ 升级固件后：全部补丁重新开启（并重装常驻网页应用）
 └─ 全部补丁还原原版
 ```
@@ -76,7 +76,7 @@ tools/                      在电脑上生成 .patched
   build_epdc_noop_waveform.py  离线生成"1023 相全零 no-op"WRF（纯离线，不连设备）
   verify_noop_wrf.py        上机前验穿自造 WRF：确认除该改的地方外逐字节不变
 docs/                       原理、排查过程、新固件上怎么重做
-  01..08、10                每个功能的实现与排查记录
+  01..08、10、19            每个功能的实现与排查记录
   09-lab126-internals.md    在真机上摸清的系统结构（进程、upstart、lipc、文件、注入）
   11-lipc-and-services.md   lipc 规则 + 92 个 com.lab126 服务索引 + 常用服务详解
   12-lipc-service-catalog.md 全部服务的完整属性表
@@ -86,6 +86,7 @@ docs/                       原理、排查过程、新固件上怎么重做
   16-webapp-waf.md         常驻网页应用（WAF）功能；Mesquito/KWebBrew 对比与 UI 方案选型
   17-fbvideo-eink-video.md  墨水屏视频播放：.ktvid 格式、波形与帧率实测、屏幕适配取舍、为什么不能更快
   18-epdc-recon-and-handover.md  EPDC v2 侦察（含**自造 1023 相长 LUT 上机实测 = 12.1 秒**）+ **工作交接**（现状、待办、雷区）
+  19-hidden-wireless.md     隐藏无线界面（nowifi）：JS 补丁的四个锚点、⋮ 菜单条目 id 的原生出处、状态栏图标注入、泡面模式开关
 ```
 
 > ⚠ 本仓库**不包含任何亚马逊的原始文件或补丁后的文件**。补丁都是从你自己机器上提取的文件生成的。
@@ -279,7 +280,7 @@ grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁
 
 ## 参考文档
 
-`docs/` 里的 01–10 是每个功能的实现与排查记录；09 和 11–15 是系统性参考资料，改新功能时先查这几篇。
+`docs/` 里的 01–10、19 是每个功能的实现与排查记录；09 和 11–15 是系统性参考资料，改新功能时先查这几篇。
 
 | 文档 | 内容 |
 |---|---|
@@ -292,6 +293,7 @@ grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁
 | [16 常驻网页应用与 UI 选型](docs/16-webapp-waf.md) | 怎么让 HTML+JS 应用永久常驻（`appreg.db` 注册机制、实测证据、排错），以及 Mesquito/KWebBrew 对比和「越狱 Kindle 上写 UI 该选哪条路」的实测数据 |
 | [17 墨水屏视频播放](docs/17-fbvideo-eink-video.md) | `.ktvid` 帧序列格式与转码、A2/DU4 波形实测（含 DU4 这个坑）、面积与帧率的取舍模型、与 K4 逐像素直驱方案的对比 |
 | [18 EPDC 只读侦察与交接](docs/18-epdc-recon-and-handover.md) | EPDC v2 寄存器表与 LUT/DDR 布局、真机只读侦察结果（working buffer、波形 blob 地址）、**下一步待办与雷区**（接手前必读） |
+| [19 隐藏无线界面 + 泡面模式](docs/19-hidden-wireless.md) | JS 补丁的四个锚点、⋮ 菜单条目 id 的原生出处（`BuildOverflowMenuConfig` / `NavigationActionFactory`）、状态栏图标的 rsvg 注入、`com.lab126.cmd wirelessEnable` 的开关与实测、坑位清单 |
 
 11–15 是参考 [KindleModding Wiki](https://kindlemodding.org/)（CC BY-NC 4.0）整理并**重新撰写**的，不是逐字复制。
 其中的事实数据（服务名、属性、机型表）都来自设备取证——服务与属性出自 wiki 作者机器上的 `lipc-probe -a -v` 转储，
