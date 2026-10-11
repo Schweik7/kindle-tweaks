@@ -1,0 +1,10 @@
+{
+  "manifestVersion": 2,
+  "minVersion": 1,
+  "waf": true,
+  "id": "com.kindletweaks.sample",
+  "name": "WAF 自检",
+  "author": "kindle-tweaks",
+  "description": "检查这个网页应用是否拿到了 window.kindle 的全部能力。可以先用它确认注册成功，再换成自己的应用。",
+  "entrypoint": "index.html"
+}

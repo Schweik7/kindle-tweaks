@@ -1,0 +1,112 @@
+<?xml version="1.0"?>
+<!--
+  kindle-tweaks: 常驻网页应用（WAF）的 config.xml 模板。
+  tweak.sh 的 webapp 子系统会把 __APPID__ / __NAME__ / __ENTRY__ 替换掉，
+  装到 /var/local/mesquite/ktweb-<slug>/config.xml，再在 appreg.db 里注册。
+
+  这个文件决定了一个 WAF 能用到哪些 window.kindle API（<feature> 段），
+  以及能不能访问 localhost 和往 documents 下载（<kindle:permissions>）。
+
+  改这个模板前先读 docs/15-wafs-and-mesquite.md：config.xml 的每一段在那里都有说明。
+  原则是「只开需要的」——这里给的是与商店 WAF 同级的一套，够大多数应用用。
+-->
+<widget id="__APPID__" version="1.0" viewmodes="application" xmlns="http://www.w3.org/ns/widgets"
+    xmlns:kindle="http://kindle.amazon.com/ns/widget-extensions">
+
+    <name xml:lang="en">__NAME__</name>
+    <description xml:lang="en">kindle-tweaks 常驻网页应用</description>
+    <name xml:lang="zh">__NAME__</name>
+    <description xml:lang="zh">kindle-tweaks 常驻网页应用</description>
+
+    <!-- 入口页面。KUAL 里注册时按应用的 manifest.json 生成 -->
+    <content src="__ENTRY__" />
+
+    <!-- local-port-access: 访问 localhost（主要是 9101 上的数据库接口）
+         download-allowed: 允许把文件下载到 documents -->
+    <kindle:permissions>
+        <kindle:permission name="local-port-access" />
+        <kindle:permission name="download-allowed" />
+    </kindle:permissions>
+
+    <kindle:network>
+        <kindle:asset key="user-agent" value="kindle://device-type" />
+        <kindle:asset key="user-agent" value="kindle://sw-version" />
+        <kindle:asset key="user-agent" value="kindle://pretty-sw-version" />
+        <kindle:asset key="http-header" value="kindle://transport-method" />
+        <kindle:asset key="http-header" value="kindle://country-code" />
+        <kindle:asset key="initialDNS" value="false" />
+        <kindle:asset key="maxConnections" value="6" />
+        <kindle:asset key="maxConnectionsPerHost" value="2" />
+        <kindle:asset key="enableCaching" value="false" />
+    </kindle:network>
+
+    <kindle:cookiejar>
+        <kindle:asset key="persistent" value="true" />
+        <kindle:asset key="usePrivateCookies" value="false" />
+        <kindle:asset key="useDeviceCookies" value="true" />
+        <kindle:asset key="useAccessToken" value="true" />
+    </kindle:cookiejar>
+
+    <!-- 顶部状态栏常驻（T）。不要写 S，否则会顶出一条搜索栏盖住应用 -->
+    <kindle:chrome>
+        <kindle:asset key="configureSearchBar" value="none" />
+    </kindle:chrome>
+
+    <!-- 想用 kindle.gestures.* 回调，要先在这里声明手势 -->
+    <kindle:gestures>
+        <kindle:param name="tap" value="yes" />
+        <kindle:param name="swipe" value="yes" />
+        <kindle:param name="drag" value="yes" />
+        <kindle:param name="hold" value="yes" />
+        <kindle:param name="pinchzoom" value="yes" properties="fire-on-zoom:1" />
+    </kindle:gestures>
+
+    <!-- 这一段决定 window.kindle 上有哪些 API。删掉哪个，JS 里哪个就是 undefined。
+
+         这份清单是 Oasis 3 / 5.15.1.1 上**商店 WAF** 的实际配置（少一个只在测试机上用的 uitest），
+         所以是这台机器上验证过可用的一套。
+         对比：浏览器 WAF 只开了 appmgr/chrome/device/download/gestures/messaging/net/viewport/popup，
+         没有 dev/dconfig/todo —— 想要这些就得自己开，这正是自己注册 WAF 比借商店缓存（Mesquito）可控的地方。 -->
+    <feature name="http://kindle.amazon.com/apis" required="true">
+        <param name="appmgr" value="yes" />
+        <param name="net" value="yes" />
+        <param name="todo" value="yes" />
+        <param name="gestures" value="yes" />
+        <param name="chrome" value="yes" />
+        <param name="dev" value="yes" />
+        <param name="dconfig" value="yes" />
+        <param name="download" value="yes" />
+        <param name="messaging" value="yes" />
+        <param name="popup" value="yes" />
+        <param name="bkgrnd" value="yes" />
+        <param name="localprefs" value="yes" />
+        <param name="device" value="yes" />
+        <param name="viewport" value="yes" />
+        <param name="winmgrUtils" value="yes" />
+        <param name="bluetooth" value="yes" />
+    </feature>
+
+    <!-- kindle.messaging 只能给这里列出的 lipc 服务发消息。
+         前三个是商店 WAF 的白名单原样；appmgrd 是额外加的（用来从网页里启动/切换别的应用），
+         系统自带 WAF 里没有先例，**属于本项目的试验项**：不通就在 JS 里 catch 掉，
+         或者干脆去掉这一行，改成用 lipc-set-prop 从 shell 侧发起。 -->
+    <kindle:messaging>
+        <kindle:app name="com.lab126.pillow" value="yes" />
+        <kindle:app name="com.lab126.chromebar" value="yes" />
+        <kindle:app name="com.lab126.readnow" value="yes" />
+        <kindle:app name="com.lab126.appmgrd" value="yes" />
+    </kindle:messaging>
+
+    <kindle:resources>
+        <kindle:asset key="ApplicationCachePath" value="/var/local/mesquite/__APPDIR__/resource/appcache" />
+        <kindle:asset key="LocalStorageQuota" value="26214400" />
+    </kindle:resources>
+
+    <kindle:settings>
+        <!-- 自己不联网也要能开；需要联网时用 kindle.net.ensureConnection -->
+        <kindle:setting name="internetRequired" value="no" />
+        <kindle:setting name="saveContext" value="yes" />
+        <kindle:setting name="disable-wua-features" value="yes" />
+    </kindle:settings>
+
+</widget>

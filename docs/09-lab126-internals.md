@@ -2,6 +2,13 @@
 
 > 在 Kindle Oasis 3、FW 5.15.1.1 上做功能时摸清的系统结构，供开发和排错参考。
 > 除非注明「推测」，都是在真机上验证过的。`lab126` 是亚马逊做 Kindle 的部门名，系统服务和应用的 ID 都以 `com.lab126.` 开头。
+>
+> **配套资料**（都是参考 KindleModding Wiki 整理的，与本文的「本机实测」互为补充）：
+> [11 lipc 与 com.lab126 服务](11-lipc-and-services.md)（lipc 规则 + 92 个服务索引）、
+> [12 lipc 服务与属性总表](12-lipc-service-catalog.md)（全部属性）、
+> [13 系统参考资料](13-kindle-system-reference.md)（`appreg.db` / `cc.db` / 调试命令 / 启动流程 / 机型）、
+> [14 自制软件与原生开发](14-kindle-homebrew-and-dev.md)、
+> [15 WAF 与 Mesquite](15-wafs-and-mesquite.md)。
 
 ## 1 进程和它们的依赖
 
@@ -67,6 +74,10 @@ lipc-wait-event -m com.lab126.powerd readyToSuspend             # 持续输出�
 | `com.lab126.pillow` | `pillowAlert` 显示系统弹窗 |
 | `com.lab126.winmgr` | 窗口、屏保相关 |
 
+> 这只是最常用的几个。**全部 92 个服务的索引见 [11 第 3 节](11-lipc-and-services.md#3-服务索引)，
+> 逐个服务的完整属性（类型、读写权限、示例值）见 [12](12-lipc-service-catalog.md)。**
+> 想找「某个设置存在哪儿」「怎么触发某个动作」，先在那两张表里搜。
+
 ## 4 appmgrd：应用生命周期
 
 - 应用注册表：`/var/local/appreg.db`（sqlite，`properties` 表的 `handlerId` / `name` / `value`），例如浏览器的启动命令：
@@ -91,6 +102,10 @@ lipc-wait-event -m com.lab126.powerd readyToSuspend             # 持续输出�
 | `/var/log/messages` | 系统日志，约每 15 分钟轮转到 `/var/local/log/messages_*.gz`，查旧日志用 `zcat` |
 
 **筛选器里的分类**看的是 `p_cdeType`，它来自 MOBI/AZW3 文件 EXTH 记录 501；PDF、TXT 没有这个字段，侧载一律是 `PDOC`（文档）。「漫画」筛选查的是 `p_type = 'Entry:Item:Comic'`（推测只有商店漫画才有）。
+
+> `appreg.db` 的完整表结构（`associations` / `extenstions` / `properties` / dconf）和「新文件类型怎么注册」见
+> [13 第 2 节](13-kindle-system-reference.md#2-appregdb)；`cc.db` 的列含义和主动触发索引的方法见
+> [13 第 3 节](13-kindle-system-reference.md#3-ccdb书库看到的内容)。
 
 ## 6 输入设备
 
@@ -117,6 +132,11 @@ event8  cyttsp5_mt       触摸屏，ABS_MT 0–1263 × 0–1679，与屏幕像�
 | `mntroot rw` / `mntroot ro` | 系统分区读写切换 |
 | `powerd_test -p` | 发送「电源键长按」调试事件（不是短按） |
 | `/usr/bin/delayShot.sh` | 延时截屏，只在开发机（存在 `/PRE_GM_DEBUGGING_FEATURES_ENABLED__REMOVE_AT_GMC`）上生效 |
+
+> 还有一族**搜索栏调试命令**（`;dm` 导出日志、`;711` WiFi 信息、`freset` 恢复出厂…），
+> 定义在 `/app/kpp_app_cmds.json`、`/usr/share/app/kpp_sys_cmds.json` 等文件里，
+> 完整列表见 [13 第 4 节](13-kindle-system-reference.md#4-搜索栏调试命令)。
+> 脚本里想触发它们可以走 lipc：`lipc-set-prop com.lab126.system executeDebugCommand "711"`。
 
 ## 8 给系统进程注入代码（LD_PRELOAD）
 

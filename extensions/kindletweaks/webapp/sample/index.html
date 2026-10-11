@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<!--
+  kindle-tweaks: 常驻网页应用（WAF）自检页。
+
+  用途：先把这个示例注册成 WAF，打开确认每一项都是「可用」，
+  说明 window.kindle 的授权和 appreg.db 注册都对了，再把自己的应用换上去。
+
+  注意：全篇用 ES5 写（var / function / 字符串拼接）。
+    Kindle 的 mesquite 是 WebKit 531/533（约等于 Safari 5），
+    不支持 const/let、箭头函数、模板字符串、默认参数。
+    而且 polyfill 补不了箭头函数和默认参数——现代 JS 应用必须先用 Babel 转译到 ES5。
+    详见 docs/16-webapp-waf.md。
+
+  另外三条是踩过的坑（见 docs/16）：
+    1. **必须有 <meta charset="UTF-8">**，否则中文乱码（file:// 下没有 HTTP 头，
+       只有这个声明能告诉 WebKit 用哪种编码）。系统自带的 WAF 全都声明了。
+    2. 状态标记用 ASCII —— ✗/⚠ 在本机只有 code2000.ttf 有，font-family 解析到的
+       STHeiti/KindleBlackbox 都没有，能不能显示全看回退，不可靠。
+    3. 字体用 dialog, sans-serif（系统 WAF 的做法），不要写死 Bookerly/Amazon Ember，
+       它们没有任何中日韩字形。
+-->
+<html lang="zh">
+<head>
+  <!-- 必须在最前面：file:// 下没有 HTTP 头，只有这个声明能告诉 WebKit 用 UTF-8 解码。
+       不写的话中文会按 Latin-1 之类的默认编码解释 → 乱码。
+       设备上系统自带的 WAF（store / browser / help / csapp / adviewer / kft）全都声明了 charset="UTF-8"。 -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="user-scalable=no" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>WAF 自检</title>
+
+  <script>
+    // mesquite 会派发 4 个应用生命周期事件。对应的可覆盖回调**只有这 4 个名字**：
+    //   ongo / onload / onpause / onunload
+    // 依据：strings /usr/bin/mesquite | grep -E "^(ongo|onload|onpause|onunload)$" 正好这 4 个，
+    // 且与日志里的 event->0..3 吻合。**没有 onback / onforward**（注意名字是 onload，不是 onStart）。
+    //
+    // 不注册就会在 /var/log/messages 里留下：
+    //   W ...:JSObjectAppManager::eventsCallbackFunction:cannot find callback function for [0]
+    // 系统自带的 adviewer 也注册了 ongo/onload/onpause，所以它没有这个警告。
+    (function () {
+      try {
+        var k = window.kindle || (window.top && window.top.kindle);
+        if (!k || !k.appmgr) { return; }
+        k.appmgr.ongo = function (context) { return true; };
+        k.appmgr.onload = function () { return true; };
+        k.appmgr.onpause = function () { return true; };
+        k.appmgr.onunload = function () { return true; };
+      } catch (e) {}
+    })();
+  </script>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body {
+      /* 用系统 WAF 同一套：'dialog' 是 kindle 的 fontconfig 别名（系统 WAF 的 CSS 里就是它），
+         fontconfig 会把中文按 lang 落到 STHeiti 之类的字体上。
+         之前我写死 "Bookerly","Amazon Ember",serif —— 这两个字体**完全没有中日韩字形**
+         （实测 Amazon Ember 全系连「中」都没有），而 serif 在设备上也不是有效族名，
+         中文只能靠逐字回退，容易出豆腐块。 */
+      font-family: dialog, sans-serif;
+      font-size: 15px; line-height: 1.5;
+      padding: 12px 16px 40px 16px;
+      color: #111;
+    }
+    h1 { font-size: 19px; margin: 4px 0 2px 0; }
+    p.sub { margin: 0 0 12px 0; color: #666; font-size: 13px; }
+    table { border-collapse: collapse; width: 100%; }
+    td { border-bottom: 1px solid #ddd; padding: 5px 4px; vertical-align: top; }
+    td.k { width: 46%; color: #333; }
+    /* 等宽族在设备上不一定有；给个回退，避免属性名挤在一起 */
+    td.v { font-family: monospace, dialog, sans-serif; font-size: 13px; word-break: break-all; }
+    .ok { color: #0a0; }
+    .no { color: #a00; }
+    .warn { color: #b60; }
+    button {
+      font-size: 15px; padding: 7px 14px; margin: 14px 8px 0 0;
+      border: 1px solid #888; background: #f4f4f4; border-radius: 3px;
+    }
+    #log { margin-top: 14px; font-family: monospace, dialog, sans-serif; font-size: 12px; color: #444; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+
+<h1>WAF 自检</h1>
+<p class="sub" id="sub">正在检查…</p>
+
+<table id="tbl"></table>
+
+<div id="btns"></div>
+<div id="log"></div>
+
+<script>
+var logLines = [];
+function log(s) {
+  logLines.push(s);
+  document.getElementById("log").textContent = logLines.join("\n");
+}
+
+// 在页面里追加一行检查结果。ok: true 可用 / false 不可用 / "warn" 存在但取不到值
+function row(key, ok, val) {
+  var tbl = document.getElementById("tbl");
+  var tr = document.createElement("tr");
+
+  var td1 = document.createElement("td");
+  td1.className = "k";
+  td1.textContent = key;
+
+  var td2 = document.createElement("td");
+  td2.className = "v";
+  // 状态标记用 ASCII。
+  // 实测（Oasis 3 / FW 5.15.1.1，扫描全部 87 个字体）：
+  //   U+2713 ✓  有 31 个字体含它（Amazon Ember、Bookerly …）
+  //   U+2717 ✗  **只有 code2000.ttf 有**
+  //   U+26A0 ⚠  **只有 code2000.ttf 有**
+  // 而 font-family: dialog / monospace 在本机分别解析到 STHeiti Medium 和 KindleBlackbox，
+  // 两者一个都没有 → 这些符号能不能显示，取决于 WebKit 是否继续回退到 Code2000，不可靠。
+  // ASCII 在任何字体里都有，所以标记只用 ASCII。
+  if (ok === true) { td2.className += " ok"; td2.textContent = "OK " + (val || "可用"); }
+  else if (ok === "warn") { td2.className += " warn"; td2.textContent = "? " + (val || ""); }
+  else { td2.className += " no"; td2.textContent = "X " + (val || "不可用"); }
+
+  tr.appendChild(td1);
+  tr.appendChild(td2);
+  tbl.appendChild(tr);
+}
+
+// 取一个可能不存在的 API，返回值或抛出说明
+function probe(path, getter) {
+  try {
+    var v = getter();
+    if (v === undefined || v === null || v === "") { return { ok: "warn", val: "返回空值" }; }
+    return { ok: true, val: String(v) };
+  } catch (e) {
+    return { ok: false, val: String(e).substring(0, 60) };
+  }
+}
+
+function kindle() {
+  // 有的位置 window.kindle 不在顶层
+  if (typeof window.kindle !== "undefined") { return window.kindle; }
+  try { if (top && typeof top.kindle !== "undefined") { return top.kindle; } } catch (e) {}
+  return null;
+}
+
+function run() {
+  var k = kindle();
+
+  if (!k) {
+    document.getElementById("sub").innerHTML =
+      "<span class='no'>没拿到 window.kindle</span> —— 说明这个页面不是 WAF 上下文，" +
+      "或者 config.xml 里没开对应的 &lt;feature&gt;。";
+    row("window.kindle", false, "不存在");
+    return;
+  }
+
+  document.getElementById("sub").innerHTML =
+    "已拿到 <b>window.kindle</b>，下面逐项检查。全部是 OK 就说明注册成功。";
+
+  row("window.kindle", true, "存在");
+  row("kindle.version", probe("version", function () { return k.version; }).ok,
+      (function () { try { return "v" + k.version; } catch (e) { return ""; } })());
+
+  // ---- 设备 ----
+  var d = k.device || k.dev;
+  row("kindle.device / kindle.dev", !!d, d ? "存在" : "不存在（<feature> 里的 device/dev）");
+  if (d) {
+    var p;
+    p = probe("getSoftwareVersionString", function () { return d.getSoftwareVersionString(); });
+    row("　固件版本字符串", p.ok, p.val);
+    p = probe("getSoftwareVersionNumber", function () { return d.getSoftwareVersionNumber(); });
+    row("　固件版本号（整数）", p.ok, p.val);
+    p = probe("getRegistrationState", function () { return d.getRegistrationState(); });
+    row("　注册状态", p.ok, p.val);
+    p = probe("hasScreenLight", function () { return d.hasScreenLight; });
+    row("　有无阅读灯", p.ok, p.val);
+    p = probe("getDPI", function () { return d.getDPI(); });
+    row("　DPI", p.ok, p.val);
+    p = probe("getDeviceLocale", function () { return d.getDeviceLocale(); });
+    row("　区域（getDeviceLocale）", p.ok, p.val);
+    p = probe("getDeviceTypeString", function () { return d.getDeviceTypeString(); });
+    row("　平台代号（getDeviceTypeString）", p.ok, p.val);
+  }
+
+  // ---- 网络 ----
+  row("kindle.net", !!k.net, k.net ? "存在" : "不存在（<feature> 里的 net）");
+  if (k.net) {
+    var q;
+    q = probe("getWirelessState", function () { return k.net.getWirelessState(); });
+    row("　无线开关", q.ok, q.val);
+    q = probe("getActiveInterface", function () { return k.net.getActiveInterface(); });
+    row("　当前出网接口", q.ok, q.val);
+    row("　roaming", probe("roaming", function () { return k.net.roaming; }).ok,
+        (function () { try { return String(k.net.roaming); } catch (e) { return ""; } })());
+  }
+
+  // ---- 消息 / lipc ----
+  row("kindle.messaging", !!k.messaging, k.messaging ? "存在" : "不存在（<feature> 里的 messaging）");
+
+  // ---- dconfig ----
+  row("kindle.dconfig", !!k.dconfig, k.dconfig ? "存在" : "不存在（<feature> 里的 dconfig）");
+  if (k.dconfig) {
+    var g = probe("getValue('url.store')", function () { return k.dconfig.getValue("url.store"); });
+    row("　dconfig url.store", g.ok, g.val);
+  }
+
+  // ---- 手势 / 界面 ----
+  row("kindle.gestures", !!k.gestures, k.gestures ? "存在（回调名看 config.xml 的 <kindle:gestures>）" : "不存在");
+  row("kindle.chrome", !!k.chrome, k.chrome ? "存在" : "不存在（<feature> 里的 chrome）");
+
+  // 用 messaging 给 chromebar 改标题 —— 成功说明 lipc 通道是通的。
+  // 标题里只用中文，不带 ✓ 之类的符号：导航栏用的字体不一定有那个字形，
+  // 而且实测中文经 JS→native 桥梁是正常的（系统 chromebar 的 lastChromeConfig 里中文完好）。
+  if (k.messaging && k.messaging.sendMessage) {
+    try {
+      k.messaging.sendMessage("com.lab126.chromebar", "configureChrome", {
+        appId: "com.kindletweaks.sample",
+        topNavBar: { template: "title", title: "WAF 自检" }
+      });
+      row("向 chromebar 发消息", true, "已发送（顶部标题应已变成「WAF 自检」）");
+    } catch (e) {
+      row("向 chromebar 发消息", false, String(e).substring(0, 60));
+    }
+  } else {
+    row("向 chromebar 发消息", false, "messaging 不可用");
+  }
+
+  // ---- 应用生命周期回调 ----
+  // 真正的注册在 <head> 里（这里只是换成带日志的版本，方便在下面看到回调被调用了）。
+  // 名字只有 ongo / onload / onpause / onunload 这 4 个。
+  row("kindle.appmgr", !!k.appmgr, k.appmgr ? "存在" : "不存在（<feature> 里的 appmgr）");
+  if (k.appmgr) {
+    try {
+      var names = ["ongo", "onload", "onpause", "onunload"];
+      var bound = [];
+      for (var i = 0; i < names.length; i++) {
+        if (k.appmgr[names[i]] !== undefined) { bound.push(names[i]); }
+        /* 闭包捕获名字，回调触发时写日志 */
+        k.appmgr[names[i]] = (function (n) {
+          return function (arg) { log("生命周期回调 " + n + " 被调用" + (arg ? "(" + arg + ")" : "")); return true; };
+        })(names[i]);
+      }
+      row("　" + names.join(" / "), true, "已注册（切走再回来可看到 onpause/onload）");
+    } catch (e) {
+      row("　生命周期回调", false, String(e).substring(0, 60));
+    }
+  }
+
+  buildButtons(k);
+  log("自检完成。若某项显示 X，先看 docs/15 的 <feature> 段和 docs/16 的排错。");
+}
+
+function buildButtons(k) {
+  var wrap = document.getElementById("btns");
+
+  // 回主页：走 lipc。这是「网页应用反过来驱动系统」的最小例子
+  var b1 = document.createElement("button");
+  b1.textContent = "回主页（lipc）";
+  b1.onclick = function () {
+    try {
+      if (k.messaging && k.messaging.sendStringMessage) {
+        k.messaging.sendStringMessage("com.lab126.appmgrd", "start", "app://com.lab126.booklet.home");
+        log("已发 lipc: appmgrd start app://com.lab126.booklet.home");
+      } else {
+        log("sendStringMessage 不可用");
+      }
+    } catch (e) { log("发 lipc 失败: " + e); }
+  };
+  wrap.appendChild(b1);
+
+  // 重新检查
+  var b2 = document.createElement("button");
+  b2.textContent = "重新检查";
+  b2.onclick = function () {
+    document.getElementById("tbl").innerHTML = "";
+    document.getElementById("btns").innerHTML = "";
+    logLines = []; document.getElementById("log").textContent = "";
+    run();
+  };
+  wrap.appendChild(b2);
+
+  // 读本地文件（iframe 技巧，mesquite 不支持 file:// 上的 fetch/XHR）
+  var b3 = document.createElement("button");
+  b3.textContent = "读 /mnt/us 下某个文件";
+  b3.onclick = function () {
+    var p = prompt("要读取的路径（file:// 开头）", "file:///mnt/us/webapps/sample/manifest.json");
+    if (!p) { return; }
+    readLocalFile(p, function (err, text) {
+      if (err) { log("读失败: " + err); return; }
+      log("读到了 " + text.length + " 字节：\n" + text.substring(0, 300));
+    });
+  };
+  wrap.appendChild(b3);
+}
+
+// mesquite 里 file:// 上的 fetch/XHR 不可用，只能用 iframe 拿 contentDocument
+function readLocalFile(url, cb) {
+  var f = document.createElement("iframe");
+  f.style.width = "1px"; f.style.height = "1px"; f.style.opacity = "0";
+  var done = false;
+  function finish(err, text) {
+    if (done) { return; }
+    done = true;
+    try { f.parentNode.removeChild(f); } catch (e) {}
+    cb(err, text);
+  }
+  f.onload = function () {
+    try {
+      var html = f.contentDocument.documentElement.innerHTML;
+      // mesquite 把纯文本包在 <pre> 里
+      html = html.replace(/^<head><\/head><body><pre[^>]*>/, "").replace(/<\/pre><\/body>$/, "");
+      finish(null, html);
+    } catch (e) { finish(String(e)); }
+  };
+  f.onerror = function () { finish("加载失败"); };
+  setTimeout(function () { finish("超时"); }, 4000);
+  f.src = url;
+  document.body.appendChild(f);
+}
+
+window.onload = run;
+</script>
+</body>
+</html>

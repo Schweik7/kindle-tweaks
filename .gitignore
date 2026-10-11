@@ -18,6 +18,14 @@ extensions/kindletweaks/bin/
 dirs.txt
 dirs.count
 extensions/kindletweaks/debugawake/mode
+# 常驻网页应用的运行时安装清单（装机时生成，不进 git）
+extensions/kindletweaks/webapp/installed.txt
+# 墨水屏视频：原始素材和转好的帧序列都不进 git（体积大，且多为第三方作品）
+*.ktvid
+*.mp4
+*.mkv
+*.webm
+extensions/kindletweaks/fbvideo/play.log
 # 微信传书口令
 extensions/kindletweaks/wxsend/config
 # 微信传书服务端的数据目录（bot_token、企业微信 Secret、管理密码、用户绑定……）
@@ -33,3 +41,20 @@ kindle_token
 sync_buf
 server/**/config.json
 events.jsonl
+# 临时工作目录（参考资料的下载与中间产物）
+.work/
+# 反汇编/逆向时产生的临时文件（IDA 钩子日志、数据库）
+Hook.log
+IDAHook.log
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.wrf
+*.wrf.gz
+# gen_lipc_catalog.py 的输入：自己从机器上导出的 lipc 转储
+lipc.txt
+lipc.before.txt
+lipc.after.txt
