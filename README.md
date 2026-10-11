@@ -20,10 +20,10 @@
 | 7 | 调试模式 | Kindle 进入深度休眠会断开 Wi-Fi/SSH；可选始终不深度休眠、仅充电时不深度休眠或关闭，屏保始终照常 | [docs/06-debug-awake.md](docs/06-debug-awake.md) |
 | 8 | 默认收藏夹视图 | Home 固定网格、图书馆筛选等操作会让界面回到「全部 + 网格」；进入屏保后，下次进入图书馆由注入 KPP 的小库瞬间恢复收藏夹视图（不重启、不白屏） | [docs/07-default-collections.md](docs/07-default-collections.md) |
 | 9 | 浏览器下载任意文件 | 体验版浏览器只许下载 .azw/.prc/.mobi/.txt，下载 epub、pdf 弹「文件类型无效」；放开后照常存到 documents，epub 由功能 5 自动转换 | [docs/08-browser-download.md](docs/08-browser-download.md) |
-| 10 | 微信传书 | 假注册设备用不了亚马逊的推送；在微信里把书发给 ClawBot 或企业微信「微信客服」，自建 VPS 收下，Kindle 亮屏联网时自动取走放进 documents，取走后微信回「已送达」；支持好友和多台 Kindle，在网页管理页上绑定 | [docs/10-wechat-send.md](docs/10-wechat-send.md) |
+| 10 | 书籍投递（微信传书） | 假注册设备用不了亚马逊的推送；在微信里把书发给 ClawBot 或企业微信「微信客服」，自建 VPS 收下，Kindle 亮屏联网时自动取走放进 documents，取走后微信回「已送达」；支持好友和多台 Kindle，在网页管理页上绑定（KUAL 菜单里这一项叫「书籍投递」） | [docs/10-wechat-send.md](docs/10-wechat-send.md) |
 | 11 | 常驻网页应用（WAF） | 越狱后能用 HTML+JS 写界面，但自己写的网页默认不是系统应用。把 `/mnt/us/webapps/<名字>/` 注册进 `appreg.db`，就成了能被启动器/脚本随时拉起的一等 WAF，拿到完整 `window.kindle`（开书、联网、发 lipc）；注册信息在持久分区，不依赖任何缓存，比 Mesquito 覆盖商店缓存的做法耐久 | [docs/16-webapp-waf.md](docs/16-webapp-waf.md) |
 | 12 | 墨水屏视频播放 | 绕开 X 直接写 framebuffer 逐帧刷屏，能在墨水屏上放视频（Bad Apple 实测可播）。A2 波形实测 8.6 fps（640×480）～6.3 fps（满宽 1264×948），**硬件天花板约 9.9 fps**；1bit 帧 + zlib 压缩，全长 Bad Apple 只有 9～16 MB | [docs/17-fbvideo-eink-video.md](docs/17-fbvideo-eink-video.md) |
-| 13 | 隐藏无线界面 + 泡面模式开关 | 未注册的机器本来就不该联网，界面上那一排无线入口很碍事：KPP 里的三处（下拉快捷设置那一排、顶栏购物车、⋮ 菜单里的「网页浏览器」「设置」「Amazon Kids」）**叠加在功能 1 的 hbc 补丁上**，状态栏的 Wi-Fi / 飞行模式 / WAN 图标由 `nowifi` 注入小库换成同尺寸空白；无线开关放进 KUAL（菜单里叫「泡面模式」，走系统飞行模式小部件同一个 lipc 属性 `com.lab126.cmd wirelessEnable`，1 = 无线开，0 = 无线关） | [docs/19-hidden-wireless.md](docs/19-hidden-wireless.md) |
+| 13 | 隐藏无线界面 + 泡面模式 / 禅模式 | 未注册的机器本来就不该联网，界面上那一排无线入口很碍事：KPP 里的三处（下拉快捷设置那一排、顶栏购物车、⋮ 菜单里的「网页浏览器」「设置」「Amazon Kids」）**叠加在功能 1 的 hbc 补丁上**，状态栏的 Wi-Fi / 飞行模式 / WAN 图标由注入小库换成同尺寸空白（KUAL 菜单里叫「禅模式」）；无线开关也放进 KUAL（叫「泡面模式」，走系统飞行模式小部件同一个 lipc 属性 `com.lab126.cmd wirelessEnable`，1 = 无线开，0 = 无线关） | [docs/19-hidden-wireless.md](docs/19-hidden-wireless.md) |
 
 ## KUAL 菜单
 
@@ -38,11 +38,11 @@ Kindle Tweaks
 ├─ 屏保开机随机排序（linkss） [已关闭] → 开启 / 关闭
 ├─ 默认收藏夹视图 [已开启]             → 开启 / 关闭（保留当前视图）
 ├─ 调试模式 [已关闭]                   → 查看当前状态 / 不深度休眠 / 充电时不深度休眠 / 关闭调试模式
-├─ 微信传书 [已开启]                   → 上次同步结果 / 立即同步 / 开启 / 关闭
+├─ 书籍投递 [已开启]                   → 上次同步结果 / 立即同步 / 开启 / 关闭
 ├─ 常驻网页应用（WAF） [0 个已常驻]     → 自检 doctor / 重新安装全部 / 候选应用（安装并常驻 / 立即打开 / 卸载）
 ├─ 墨水屏视频播放 [0 个视频｜off]       → 停止播放 / 视频列表（选波形：A2 推荐 / DU / GC16）
 ├─ 泡面模式 [已关闭]                     → 开启 / 关闭
-├─ 隐藏状态栏无线图标（nowifi） [已开启]   → 开启 / 关闭（显示图标）
+├─ 禅模式 [已开启]                       → 开启 / 关闭
 ├─ 升级固件后：全部补丁重新开启（并重装常驻网页应用）
 └─ 全部补丁还原原版（⚠ 要再点一次确认） → ⚠ 确认还原原版 / 取消，什么都不做
 ```
@@ -59,13 +59,13 @@ extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensio
   mangaconv/                漫画 epub → PDF、文字书 epub/md/docx → AZW3（mangaconv.py + docconv.py + upstart 任务模板）
   debugawake/               调试模式：充电时推迟深度休眠的 upstart 任务模板
   libraryview/              恢复收藏夹视图：upstart 任务模板 + 注入 KPP 的 libkt_libview.c
-  nowifi/                   隐藏状态栏的无线图标：注入 JunoStatusBarDriver 的 libkt_nowifi.c
-  wxsend/                   微信传书：拉取用的 upstart 任务模板 + config.example
+  nowifi/                   禅模式（隐藏状态栏的无线图标）：注入 JunoStatusBarDriver 的 libkt_nowifi.c
+  wxsend/                   书籍投递：拉取用的 upstart 任务模板 + config.example
   webapp/                   常驻网页应用（WAF）：config.template.xml + sample/ 自检示例
   fbvideo/                  墨水屏视频播放：play.py（Pillow + py-fbink 逐帧刷屏）
   tools/epdc_recon.py       EPDC v2 只读侦察（寄存器 / 扫描帧率 / 波形 blob 解码；危险操作已按事故加固）
   files/                    补丁用的系统文件 *.orig / *.patched（自己生成，不进 git）
-server/wxsend/              微信传书的 VPS 端（wxsend.py + systemd 单元 + nginx location）
+server/wxsend/              书籍投递（微信传书）的 VPS 端（wxsend.py + systemd 单元 + nginx location）
 tools/                      在电脑上生成 .patched
   patch_kpp.py              KPPMainApp.js.hbc（功能 1，需要 hermes-dec）
   patch_kpp_nowifi.py       KPPMainApp.js.hbc：隐藏无线相关界面（快捷设置那一排、顶栏购物车、⋮ 菜单里的网页浏览器/设置/Amazon Kids），需要 hermes-dec
@@ -89,7 +89,7 @@ docs/                       原理、排查过程、新固件上怎么重做
   16-webapp-waf.md         常驻网页应用（WAF）功能；Mesquito/KWebBrew 对比与 UI 方案选型
   17-fbvideo-eink-video.md  墨水屏视频播放：.ktvid 格式、波形与帧率实测、屏幕适配取舍、为什么不能更快
   18-epdc-recon-and-handover.md  EPDC v2 侦察（含**自造 1023 相长 LUT 上机实测 = 12.1 秒**）+ **工作交接**（现状、待办、雷区）
-  19-hidden-wireless.md     隐藏无线界面（nowifi）：JS 补丁的四个锚点、⋮ 菜单条目 id 的原生出处、状态栏图标注入、泡面模式开关
+  19-hidden-wireless.md     隐藏无线界面（nowifi）：JS 补丁的四个锚点、⋮ 菜单条目 id 的原生出处、状态栏图标注入（禅模式）、泡面模式开关
 ```
 
 > ⚠ 本仓库**不包含任何亚马逊的原始文件或补丁后的文件**。补丁都是从你自己机器上提取的文件生成的。
@@ -270,7 +270,7 @@ grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁
 
 - **固件版本不变**：KUAL →「升级固件后：全部补丁重新开启（并重装常驻网页应用）」，再在「文件夹收藏夹」里重新「开启自动同步」、在「大漫画 epub 转 PDF」里重新「开启」。
   常驻网页应用的**安装清单在 `/mnt/us/extensions/kindletweaks/webapp/installed.txt`**，固件更新不会丢，所以那一步会自动把它们重装回 `appreg.db`；也可以单独点「常驻网页应用」→「重新安装全部常驻应用」。
-  隐藏无线界面（功能 13）的两半也都在这一步里：hbc 那半随功能 1 的 `.patched` 一起写回，状态栏那半由「隐藏状态栏无线图标（nowifi）」重新改一遍 `/etc/upstart/statusbar.conf`。
+  状态栏那半由「禅模式」重新改一遍 `/etc/upstart/statusbar.conf`（并把 `libkt_nowifi.so` 重新装到 `/usr/lib/`）。
 - **固件版本变了**：菜单里会显示「文件不匹配」，脚本不会写入。
   1. 用新固件的文件重新生成 `.orig` / `.patched`。
   2. 如果生成脚本找不到特征，按 docs 里的手动方法重新定位。

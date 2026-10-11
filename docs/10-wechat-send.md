@@ -1,4 +1,4 @@
-# 10 微信传书
+# 10 微信传书（KUAL 菜单里叫「书籍投递」）
 
 > 效果：在微信里把 epub/pdf/mobi/azw3/txt/md/docx 以「文件」发给 ClawBot 或企业微信「微信客服」（[3.1 节](#31-换成企业微信微信客服)），Kindle 下次亮屏联网时自动取走、放进 documents；epub/md/docx 再由[功能 5](05-manga-convert.md) 转成 AZW3。取走后微信里会收到「✅ 已送达 Kindle」。
 
@@ -139,7 +139,7 @@ sh ../tweak.sh wxsend now     # 先手动同步一次试试
 sh ../tweak.sh wxsend on      # 安装 upstart 任务
 ```
 
-或者 KUAL →「Kindle Tweaks」→「微信传书」。菜单第一行显示上次同步的结果。
+或者 KUAL →「Kindle Tweaks」→「书籍投递」（这一项就是微信传书）。菜单第一行显示上次同步的结果。
 
 - 第一次同步时生成本机设备码，追加到 `config` 的 `DEVICE=`；之后在管理页把微信用户绑到它。
 - 下载先写到 `/mnt/us/.wxsend-part/`，校验字节数后再 `mv` 进 documents（同一分区，原子操作），书库扫描器和 mangaconv 不会看到半截文件。新书由系统扫描器自动收录，不用额外操作。

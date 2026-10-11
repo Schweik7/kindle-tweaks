@@ -11,7 +11,7 @@
 #   tweak.sh debugawake always|charging|off   调试模式：始终阻止 / 仅充电阻止 / 关闭深度休眠推迟
 #   tweak.sh libraryview on|off          主界面重载时默认进入收藏夹视图
 #   tweak.sh nowifi on|off               隐藏状态栏的无线图标（给 JunoStatusBarDriver 注入 libkt_nowifi.so）
-#   tweak.sh wxsend on|off|now           微信传书：亮屏自动同步开关 / 立即同步（配置 wxsend/config）
+#   tweak.sh wxsend on|off|now           书籍投递（微信传书）：亮屏自动同步开关 / 立即同步（配置 wxsend/config）
 #   tweak.sh webapp install|uninstall|launch|state <名字>   常驻网页应用（WAF）：安装并注册 / 卸载 / 打开 / 看状态
 #   tweak.sh webapp scan|list|doctor|restore               候选应用 / 已安装清单 / 自检 / 升级固件后重装
 #   tweak.sh fbvideo play <文件> [A2|DU|GC16]              墨水屏视频播放（后台放，屏幕由播放器接管）
@@ -450,32 +450,44 @@ libraryview_status() {
 	libraryview_injected && echo "on（注入，免重启）" || echo "on（屏保时重载 KPP）"
 }
 
-# ---------------------------------------------------------------- 状态栏的无线图标隐藏（nowifi）
+# ---------------------------------------------------------------- 禅模式（隐藏状态栏的无线图标）
 # 状态栏进程 JunoStatusBarDriver 的图标全交给 librsvg 渲染，注入 libkt_nowifi.so 后把
 # Wi-Fi 扇形、WAN 信号条、AirplaneMode.svg 换成同尺寸空白 SVG（特征与原理见 docs/19）。
 # 和 libraryview 一样改 upstart 任务的 exec 行；这台的 upstart 没有 initctl，改完要 kill -HUP 1 重读。
+#
+# ⚠ 库要装到**系统分区**再注入，不能用 /mnt/us 下的路径：状态栏任务跟着 lab126_gui 起得很早，
+#    实测重启后进程环境里虽然有 LD_PRELOAD，maps 里却没有这个库（userstore 还没真正可用），
+#    也就是开机那次注入会静默失败。系统分区开机就在，稳。
 # hbc 那部分（快捷设置那一排、顶栏购物车、⋮ 菜单三项）在 popup 的 .patched 里，
 # 生成步骤见 README：patch_kpp.py 打底，再 patch_kpp_nowifi.py 叠加。
-NW_SO=${EXT}/nowifi/libkt_nowifi.so
+NW_SO=${EXT}/nowifi/libkt_nowifi.so      # 源：用户分区，自己编译后 scp 过来
+NW_SO_SYS=/usr/lib/libkt_nowifi.so       # 装机位置：系统分区，开机即可用
 STATUS_JOB=/etc/upstart/statusbar.conf
 
 nowifi_preload() {
 	case "$1" in
 		on)
 			[ -f ${NW_SO} ] || return 1
-			grep -q "LD_PRELOAD=${NW_SO} /app/bin/JunoStatusBarDriver" ${STATUS_JOB} && return 0
-			# exec 行在 script 段里、前面有缩进，所以不能用 ^exec 锚
-			sed -i "s|\(^[[:space:]]*\)exec /app/bin/JunoStatusBarDriver\$|\1exec env LD_PRELOAD=${NW_SO} /app/bin/JunoStatusBarDriver|" ${STATUS_JOB}
+			cp -f ${NW_SO} ${NW_SO_SYS} && chmod 644 ${NW_SO_SYS} || return 1
+			grep -q "LD_PRELOAD=${NW_SO_SYS} /app/bin/JunoStatusBarDriver" ${STATUS_JOB} && return 0
+			# exec 行在 script 段里、前面有缩进，所以不能用 ^exec 锚。两条 -e：一条管原本没注入的
+			# 行，一条管已经注入了（但路径可能是老版本写进去的）行
+			sed -i \
+				-e "s|\(^[[:space:]]*\)exec /app/bin/JunoStatusBarDriver\$|\1exec env LD_PRELOAD=${NW_SO_SYS} /app/bin/JunoStatusBarDriver|" \
+				-e "s|\(^[[:space:]]*\)exec env LD_PRELOAD=[^ ]* /app/bin/JunoStatusBarDriver\$|\1exec env LD_PRELOAD=${NW_SO_SYS} /app/bin/JunoStatusBarDriver|" \
+				${STATUS_JOB}
+			grep -q "LD_PRELOAD=${NW_SO_SYS} /app/bin/JunoStatusBarDriver" ${STATUS_JOB} || return 1
 			;;
 		off)
 			sed -i "s|\(^[[:space:]]*\)exec env LD_PRELOAD=[^ ]* /app/bin/JunoStatusBarDriver\$|\1exec /app/bin/JunoStatusBarDriver|" ${STATUS_JOB}
+			rm -f ${NW_SO_SYS}
 			;;
 	esac
 	# upstart 0.6.6 没有 initctl，改了任务文件要发 SIGHUP 让它重读
 	kill -HUP 1
 }
 
-nowifi_state() { grep -q "LD_PRELOAD=${NW_SO}" ${STATUS_JOB} 2>/dev/null && echo on || echo off; }
+nowifi_state() { [ -f ${NW_SO_SYS} ] && grep -q "LD_PRELOAD=${NW_SO_SYS} /app/bin/JunoStatusBarDriver" ${STATUS_JOB} 2>/dev/null && echo on || echo off; }
 nowifi_injected() { grep -q libkt_nowifi /proc/$(pidof JunoStatusBarDriver 2>/dev/null)/maps 2>/dev/null; }
 nowifi_status() {
 	[ "$(nowifi_state)" = on ] || { echo off; return; }
@@ -514,7 +526,7 @@ nowifi() {
 	fi
 }
 
-# 微信传书：VPS 上的 server/wxsend 收下微信里发来的书，这里拉到 documents
+# 书籍投递（微信传书，KUAL 菜单里叫「书籍投递」）：VPS 上的 server/wxsend 收下微信里发来的书，这里拉到 documents
 WX=${EXT}/wxsend
 TAB=$(printf '\t')
 
@@ -1088,7 +1100,7 @@ $(manga_dir_items)
 EOF
 		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 7 "关闭（固定顺序，开机更快）"
 		toggle "泡面模式" "$(airplane_state)" airplane 13 "关闭"
-		toggle "隐藏状态栏无线图标（nowifi）" "$(nowifi_state)" nowifi 14 "关闭（显示图标）"
+		toggle "禅模式" "$(nowifi_state)" nowifi 14 "关闭"
 		cat <<EOF
 		{"name": "默认收藏夹视图 [$(label $(libraryview_state))]", "priority": 8, "items": [
 			{"name": "开启（进入屏保时校正）", "priority": 1, "checked": $([ "$(libraryview_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview on"},
@@ -1100,7 +1112,7 @@ EOF
 			{"name": "充电时不深度休眠", "priority": 3, "checked": $([ "$(debugawake_state)" = charging ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake charging"},
 			{"name": "关闭调试模式", "priority": 4, "checked": $([ "$(debugawake_state)" = off ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "debugawake off"}
 		]},
-		{"name": "微信传书 [$(label $(wxsend_state))]", "priority": 10, "items": [
+		{"name": "书籍投递 [$(label $(wxsend_state))]", "priority": 10, "items": [
 			{"name": "$(s=$(wxsend_status); echo "${s:-还没同步过}")（点此刷新）", "priority": 1, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
 			{"name": "立即同步（本机编号 $([ -f ${WX}/config ] && wxsend_device || echo 未配置)）", "priority": 2, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "wxsend now"},
 			{"name": "开启（亮屏时自动同步）", "priority": 3, "checked": $([ "$(wxsend_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "wxsend on"},

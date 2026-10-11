@@ -149,7 +149,7 @@ KPPSettings::QuickSettings::AirplaneWidgetController::execute
 | 半 | 落在哪 | 谁管 | KUAL 菜单项 |
 |---|---|---|---|
 | hbc 三处界面 | `/app/KPPMainApp/js/KPPMainApp.js.hbc`（系统分区） | 功能 1 的补丁单元（`files/KPPMainApp.js.hbc.patched`） | 「去除「云端不可用」弹窗 + 隐藏无线界面」 |
-| 状态栏图标 | `/etc/upstart/statusbar.conf` 的 exec 行（系统分区）+ `nowifi/libkt_nowifi.so`（用户分区） | `tweak.sh nowifi on\|off` | 「隐藏状态栏无线图标（nowifi）」 |
+| 状态栏图标 | `/etc/upstart/statusbar.conf` 的 exec 行 + `/usr/lib/libkt_nowifi.so`（都在系统分区） | `tweak.sh nowifi on\|off` | 「禅模式」 |
 
 ### 4.1 hbc：popup 打底，nowifi 叠加
 
@@ -176,7 +176,8 @@ scp KPPMainApp.js.hbc.* root@<kindle-ip>:/mnt/us/extensions/kindletweaks/files/
 （和 `libraryview` 改 `kppmainapp.conf` 一个套路，见 docs/07）：
 
 ```sh
-tweak.sh nowifi on     # = mntroot rw + sed 改 statusbar.conf 的 exec 行 + kill -HUP 1
+tweak.sh nowifi on     # = mntroot rw + 把 libkt_nowifi.so 装到 /usr/lib/
+                       #   + sed 改 statusbar.conf 的 exec 行 + kill -HUP 1
                        #   + 重启 JunoStatusBarDriver（upstart 的 respawn 不会换环境）
 tweak.sh status        # nowifi(statusbar icons): on（状态栏已注入）
 ```
@@ -184,10 +185,19 @@ tweak.sh status        # nowifi(statusbar icons): on（状态栏已注入）
 改完的那一行长这样：
 
 ```
-exec env LD_PRELOAD=/mnt/us/extensions/kindletweaks/nowifi/libkt_nowifi.so /app/bin/JunoStatusBarDriver
+exec env LD_PRELOAD=/usr/lib/libkt_nowifi.so /app/bin/JunoStatusBarDriver
 ```
 
-`.so` 在用户分区（`extensions/kindletweaks/nowifi/`），不进 git，要在电脑上编译后 scp 过去。
+⚠ **库必须放在系统分区，不能放在 `/mnt/us` 下。** 第一版写的是
+`/mnt/us/extensions/kindletweaks/nowifi/libkt_nowifi.so`，手工 `tweak.sh nowifi on` 之后一切正常，
+**但重启后注入是静默失效的**：实测重启后 `JunoStatusBarDriver`（ppid=1，说明确实是这个任务起的）
+环境里明明有 `LD_PRELOAD=…/libkt_nowifi.so`，`/proc/<pid>/maps` 里却没有这个库，图标照旧显示。
+原因是状态栏任务跟着 `lab126_gui` 起得很早（实测比 `mounted_userstore` 只晚 10 秒），
+那一刻 userstore 还没真正可用，ld.so 预加载失败只留一条警告就继续跑，`tweak.sh status`
+也只会显示「on（下次状态栏重启生效）」。放系统分区（开机就在）之后重启实测正常。
+
+`.so` 的源文件在用户分区 `extensions/kindletweaks/nowifi/`，不进 git，要在电脑上编译后 scp 过去；
+`tweak.sh nowifi on` 会把它复制到 `/usr/lib/`。
 
 ### 4.3 升级固件后
 
