@@ -10,6 +10,7 @@
 #   tweak.sh manga dir <序号>            按目录转换（序号是菜单生成时 mangaconv/dirs.txt 的行号）
 #   tweak.sh debugawake always|charging|off   调试模式：始终阻止 / 仅充电阻止 / 关闭深度休眠推迟
 #   tweak.sh libraryview on|off          主界面重载时默认进入收藏夹视图
+#   tweak.sh nowifi on|off               隐藏状态栏的无线图标（给 JunoStatusBarDriver 注入 libkt_nowifi.so）
 #   tweak.sh wxsend on|off|now           微信传书：亮屏自动同步开关 / 立即同步（配置 wxsend/config）
 #   tweak.sh webapp install|uninstall|launch|state <名字>   常驻网页应用（WAF）：安装并注册 / 卸载 / 打开 / 看状态
 #   tweak.sh webapp scan|list|doctor|restore               候选应用 / 已安装清单 / 自检 / 升级固件后重装
@@ -447,6 +448,70 @@ libraryview_state() { [ -f /etc/upstart/kindletweaks-libraryview.conf ] && echo 
 libraryview_status() {
 	[ "$(libraryview_state)" = on ] || { echo off; return; }
 	libraryview_injected && echo "on（注入，免重启）" || echo "on（屏保时重载 KPP）"
+}
+
+# ---------------------------------------------------------------- 状态栏的无线图标隐藏（nowifi）
+# 状态栏进程 JunoStatusBarDriver 的图标全交给 librsvg 渲染，注入 libkt_nowifi.so 后把
+# Wi-Fi 扇形、WAN 信号条、AirplaneMode.svg 换成同尺寸空白 SVG（特征与原理见 docs/19）。
+# 和 libraryview 一样改 upstart 任务的 exec 行；这台的 upstart 没有 initctl，改完要 kill -HUP 1 重读。
+# hbc 那部分（快捷设置那一排、顶栏购物车、⋮ 菜单三项）在 popup 的 .patched 里，
+# 生成步骤见 README：patch_kpp.py 打底，再 patch_kpp_nowifi.py 叠加。
+NW_SO=${EXT}/nowifi/libkt_nowifi.so
+STATUS_JOB=/etc/upstart/statusbar.conf
+
+nowifi_preload() {
+	case "$1" in
+		on)
+			[ -f ${NW_SO} ] || return 1
+			grep -q "LD_PRELOAD=${NW_SO} /app/bin/JunoStatusBarDriver" ${STATUS_JOB} && return 0
+			# exec 行在 script 段里、前面有缩进，所以不能用 ^exec 锚
+			sed -i "s|\(^[[:space:]]*\)exec /app/bin/JunoStatusBarDriver\$|\1exec env LD_PRELOAD=${NW_SO} /app/bin/JunoStatusBarDriver|" ${STATUS_JOB}
+			;;
+		off)
+			sed -i "s|\(^[[:space:]]*\)exec env LD_PRELOAD=[^ ]* /app/bin/JunoStatusBarDriver\$|\1exec /app/bin/JunoStatusBarDriver|" ${STATUS_JOB}
+			;;
+	esac
+	# upstart 0.6.6 没有 initctl，改了任务文件要发 SIGHUP 让它重读
+	kill -HUP 1
+}
+
+nowifi_state() { grep -q "LD_PRELOAD=${NW_SO}" ${STATUS_JOB} 2>/dev/null && echo on || echo off; }
+nowifi_injected() { grep -q libkt_nowifi /proc/$(pidof JunoStatusBarDriver 2>/dev/null)/maps 2>/dev/null; }
+nowifi_status() {
+	[ "$(nowifi_state)" = on ] || { echo off; return; }
+	nowifi_injected && echo "on（状态栏已注入）" || echo "on（下次状态栏重启生效）"
+}
+
+# 改了 exec 行以后要真的重启状态栏进程：upstart 的 respawn 不会换环境
+nowifi_restart_statusbar() {
+	stop statusbar >/dev/null 2>&1
+	pid=$(pidof JunoStatusBarDriver 2>/dev/null)
+	[ -n "${pid}" ] && kill ${pid} 2>/dev/null
+	i=0
+	while [ ${i} -lt 10 ]; do
+		[ -z "$(pidof JunoStatusBarDriver 2>/dev/null)" ] && break
+		sleep 1
+		i=$((i + 1))
+	done
+	start statusbar >/dev/null 2>&1
+	sleep 2
+}
+
+nowifi() {
+	case "$1" in
+		on | off) ;;
+		*) say "nowifi: 用法 nowifi on|off"; return 1 ;;
+	esac
+	mntroot rw
+	nowifi_preload "$1" || { mntroot ro; say "nowifi: 缺 ${NW_SO}（先在电脑上编译，见 docs/19）"; return 1; }
+	mntroot ro
+	[ "$(nowifi_state)" = "$1" ] || { say "nowifi: 写 ${STATUS_JOB} 后校验失败"; return 1; }
+	nowifi_restart_statusbar
+	if nowifi_injected; then
+		say "nowifi: $1（状态栏已注入）"
+	else
+		say "nowifi: $1（状态栏进程没加载到，重启后或换个进程再看）"
+	fi
 }
 
 # 微信传书：VPS 上的 server/wxsend 收下微信里发来的书，这里拉到 documents
@@ -996,7 +1061,7 @@ menu() {
 		"priority": 0,
 		"items": [
 EOF
-		toggle "去除「云端不可用」弹窗" "$(state popup)" popup 1 "关闭（还原原版）"
+		toggle "去除「云端不可用」弹窗 + 隐藏无线界面" "$(state popup)" popup 1 "关闭（还原原版）"
 		toggle "解锁「查看选项→收藏夹」" "$(state collview)" collview 2 "关闭（还原原版）"
 		toggle "PDF 全屏（无底栏无边距）" "$(state pdffull)" pdffull 3 "关闭（还原原版）"
 		toggle "浏览器可下载任意文件（存到 documents）" "$(state browserdl)" browserdl 4 "关闭（还原原版）"
@@ -1023,6 +1088,7 @@ $(manga_dir_items)
 EOF
 		toggle "屏保开机随机排序（linkss）" "$(ss_state)" ssrandom 7 "关闭（固定顺序，开机更快）"
 		toggle "泡面模式" "$(airplane_state)" airplane 13 "关闭"
+		toggle "隐藏状态栏无线图标（nowifi）" "$(nowifi_state)" nowifi 14 "关闭（显示图标）"
 		cat <<EOF
 		{"name": "默认收藏夹视图 [$(label $(libraryview_state))]", "priority": 8, "items": [
 			{"name": "开启（进入屏保时校正）", "priority": 1, "checked": $([ "$(libraryview_state)" = on ] && echo true || echo false), "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "libraryview on"},
@@ -1056,8 +1122,8 @@ $(webapp_menu_items)
 			{"name": "── 下面点一个就播（自动扫描）──", "priority": 5, "refresh": true, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "menu"},
 $(fbvideo_menu_items)
 		]},
-		{"name": "升级固件后：全部补丁重新开启（并重装常驻网页应用）", "priority": 14, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
-		{"name": "全部补丁还原原版", "priority": 15, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
+		{"name": "升级固件后：全部补丁重新开启（并重装常驻网页应用）", "priority": 15, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all on"},
+		{"name": "全部补丁还原原版", "priority": 16, "refresh": true, "action": "${EXT}/tweak.sh", "params": "all off"}
 		]
 	}
 	]
@@ -1103,6 +1169,7 @@ case "$1" in
 		echo "airplane: $(airplane_state)"
 		echo "manga(auto): $(manga_state) $(manga_status)"
 		echo "libraryview(default collections): $(libraryview_status)"
+		echo "nowifi(statusbar icons): $(nowifi_status)"
 		echo "debugawake: $(debugawake_status)"
 		echo "wxsend: $(wxsend_state) $(wxsend_status)"
 		echo "webapp(WAF): $(webapp_count) 个已常驻$([ -f ${WA_LIST} ] && echo "，清单 $(grep -c . ${WA_LIST} 2>/dev/null) 项" || echo "")"
@@ -1113,6 +1180,12 @@ case "$1" in
 		;;
 	all)
 		for u in ${UNITS}; do [ "$(state ${u})" = missing ] || set_unit ${u} $2; done
+		# 状态栏注入不是文件补丁（改的是 upstart 任务里的 exec 行），单独走一遍
+		if [ "$2" != on ] || [ -f ${NW_SO} ]; then
+			nowifi $2
+		else
+			say "nowifi: 缺 ${NW_SO}，跳过（先在电脑上编译，见 docs/19）"
+		fi
 		# on 的时候顺手把常驻网页应用重装一遍：升级固件后 /var/local 或 appreg.db 可能被重置
 		[ "$2" = on ] && webapp_restore
 		menu
@@ -1151,6 +1224,11 @@ case "$1" in
 		rc=$?
 		[ "$2" = apply ] && exit ${rc}
 		screen "kindle-tweaks: default collections $2"
+		menu
+		;;
+	nowifi)
+		nowifi $2
+		screen "kindle-tweaks: statusbar wifi icons $2"
 		menu
 		;;
 	manga)

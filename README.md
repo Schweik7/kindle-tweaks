@@ -11,7 +11,7 @@
 
 | # | 功能 | 解决的问题 | 文档 |
 |---|---|---|---|
-| 1 | 去掉「云端不可用」弹窗 | 假注册后每次进书库都弹「云端不可用，您必须注册 kindle…」 | [docs/01-cloud-popup.md](docs/01-cloud-popup.md) |
+| 1 | 去掉「云端不可用」弹窗 | 假注册后每次进书库都弹「云端不可用，您必须注册 kindle…」；功能 13 的界面隐藏也叠加在这一份 `KPPMainApp.js.hbc.patched` 上（popup 打底，再打 nowifi） | [docs/01-cloud-popup.md](docs/01-cloud-popup.md) |
 | 2 | 文件夹 → 收藏夹自动同步 | Kindle 不认文件夹；未注册时「新建收藏夹」是灰色的 | [docs/02-folder-collections.md](docs/02-folder-collections.md) |
 | 3 | 解锁「查看选项 → 收藏夹」视图 | 收藏夹里的书仍在书库第一层平铺；该视图在未注册时是灰色的 | [docs/03-collections-view.md](docs/03-collections-view.md) |
 | 4 | PDF 全屏 | PDF 底部常驻阅读百分比、四周有白边，设置里关不掉 | [docs/04-pdf-fullscreen.md](docs/04-pdf-fullscreen.md) |
@@ -23,13 +23,13 @@
 | 10 | 微信传书 | 假注册设备用不了亚马逊的推送；在微信里把书发给 ClawBot 或企业微信「微信客服」，自建 VPS 收下，Kindle 亮屏联网时自动取走放进 documents，取走后微信回「已送达」；支持好友和多台 Kindle，在网页管理页上绑定 | [docs/10-wechat-send.md](docs/10-wechat-send.md) |
 | 11 | 常驻网页应用（WAF） | 越狱后能用 HTML+JS 写界面，但自己写的网页默认不是系统应用。把 `/mnt/us/webapps/<名字>/` 注册进 `appreg.db`，就成了能被启动器/脚本随时拉起的一等 WAF，拿到完整 `window.kindle`（开书、联网、发 lipc）；注册信息在持久分区，不依赖任何缓存，比 Mesquito 覆盖商店缓存的做法耐久 | [docs/16-webapp-waf.md](docs/16-webapp-waf.md) |
 | 12 | 墨水屏视频播放 | 绕开 X 直接写 framebuffer 逐帧刷屏，能在墨水屏上放视频（Bad Apple 实测可播）。A2 波形实测 8.6 fps（640×480）～6.3 fps（满宽 1264×948），**硬件天花板约 9.9 fps**；1bit 帧 + zlib 压缩，全长 Bad Apple 只有 9～16 MB | [docs/17-fbvideo-eink-video.md](docs/17-fbvideo-eink-video.md) |
-| 13 | 隐藏无线界面 + 泡面模式开关 | 未注册的机器本来就不该联网，界面上那一排无线入口很碍事：补丁把下拉快捷设置那一排、顶栏购物车、⋮ 菜单里的「网页浏览器」「设置」「Amazon Kids」都去掉，状态栏的 Wi-Fi / 飞行模式 / WAN 图标也换成空白；随后把无线开关放进 KUAL（菜单里叫「泡面模式」，走系统飞行模式小部件同一个 lipc 属性 `com.lab126.cmd wirelessEnable`，1 = 无线开，0 = 无线关） | [docs/19-hidden-wireless.md](docs/19-hidden-wireless.md) |
+| 13 | 隐藏无线界面 + 泡面模式开关 | 未注册的机器本来就不该联网，界面上那一排无线入口很碍事：KPP 里的三处（下拉快捷设置那一排、顶栏购物车、⋮ 菜单里的「网页浏览器」「设置」「Amazon Kids」）**叠加在功能 1 的 hbc 补丁上**，状态栏的 Wi-Fi / 飞行模式 / WAN 图标由 `nowifi` 注入小库换成同尺寸空白；无线开关放进 KUAL（菜单里叫「泡面模式」，走系统飞行模式小部件同一个 lipc 属性 `com.lab126.cmd wirelessEnable`，1 = 无线开，0 = 无线关） | [docs/19-hidden-wireless.md](docs/19-hidden-wireless.md) |
 
 ## KUAL 菜单
 
 ```
 Kindle Tweaks
-├─ 去除「云端不可用」弹窗 [已开启]   → 开启 / 关闭（还原原版）
+├─ 去除「云端不可用」弹窗 + 隐藏无线界面 [已开启] → 开启 / 关闭（还原原版）
 ├─ 解锁「查看选项→收藏夹」 [已开启] → 开启 / 关闭（还原原版）
 ├─ PDF 全屏（无底栏无边距） [已开启] → 开启 / 关闭（还原原版）
 ├─ 浏览器可下载任意文件（存到 documents） [已开启] → 开启 / 关闭（还原原版）
@@ -42,6 +42,7 @@ Kindle Tweaks
 ├─ 常驻网页应用（WAF） [0 个已常驻]     → 自检 doctor / 重新安装全部 / 候选应用（安装并常驻 / 立即打开 / 卸载）
 ├─ 墨水屏视频播放 [0 个视频｜off]       → 停止播放 / 视频列表（选波形：A2 推荐 / DU / GC16）
 ├─ 泡面模式 [已关闭]                     → 开启 / 关闭
+├─ 隐藏状态栏无线图标（nowifi） [已开启]   → 开启 / 关闭（显示图标）
 ├─ 升级固件后：全部补丁重新开启（并重装常驻网页应用）
 └─ 全部补丁还原原版
 ```
@@ -57,6 +58,7 @@ extensions/kindletweaks/    KUAL 扩展，整个目录拷到 Kindle 的 extensio
   mangaconv/                漫画 epub → PDF、文字书 epub/md/docx → AZW3（mangaconv.py + docconv.py + upstart 任务模板）
   debugawake/               调试模式：充电时推迟深度休眠的 upstart 任务模板
   libraryview/              恢复收藏夹视图：upstart 任务模板 + 注入 KPP 的 libkt_libview.c
+  nowifi/                   隐藏状态栏的无线图标：注入 JunoStatusBarDriver 的 libkt_nowifi.c
   wxsend/                   微信传书：拉取用的 upstart 任务模板 + config.example
   webapp/                   常驻网页应用（WAF）：config.template.xml + sample/ 自检示例
   fbvideo/                  墨水屏视频播放：play.py（Pillow + py-fbink 逐帧刷屏）
@@ -106,9 +108,13 @@ docs/                       原理、排查过程、新固件上怎么重做
 # 0. 如需文字书转换，先构建 Kindle 原生 ARM 转换器
 python tools/build_ebook_converters.py extensions/kindletweaks/bin
 
-# 0b. 默认收藏夹视图的免重启注入库（需要 pip install ziglang；不编译也能用，退回屏保时重载 KPP）
+# 0b. 免重启注入库（需要 pip install ziglang；不编译也能用，退回屏保时重载 KPP）
+#     默认收藏夹视图
 python -m ziglang cc -target arm-linux-gnueabi.2.20 -mcpu=cortex_a7 -shared -fPIC -O2 -s -Wl,-z,lazy \
     -o extensions/kindletweaks/libraryview/libkt_libview.so extensions/kindletweaks/libraryview/libkt_libview.c
+#     隐藏状态栏的无线图标（功能 13 的状态栏部分）
+python -m ziglang cc -target arm-linux-gnueabi.2.20 -mcpu=cortex_a7 -shared -fPIC -O2 -s -Wl,-z,lazy \
+    -o extensions/kindletweaks/nowifi/libkt_nowifi.so extensions/kindletweaks/nowifi/libkt_nowifi.c
 
 # 1. 装扩展
 scp -r extensions/kindletweaks root@<kindle-ip>:/mnt/us/extensions/
@@ -122,6 +128,8 @@ scp root@<kindle-ip>:/usr/bin/mesquite                   mesquite.orig
 
 # 3. 在电脑上生成补丁版（需要哪个功能就生成哪个）
 python tools/patch_kpp.py  KPPMainApp.js.hbc.orig KPPMainApp.js.hbc.patched
+#    「隐藏无线界面」（功能 13）是在上一个补丁上**叠加**的：popup 打底，再打一遍 nowifi
+python tools/patch_kpp_nowifi.py KPPMainApp.js.hbc.patched KPPMainApp.js.hbc.patched
 python tools/patch_ksdk.py libKSDKLibrary.so.orig libKSDKLibrary.so.patched
 python tools/patch_mesquite.py mesquite.orig mesquite.patched
 python tools/pdf_fullscreen/build.py ebook-lib pdf-out     # 生成 3 对 jar 的 .orig/.patched
@@ -261,6 +269,7 @@ grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁
 
 - **固件版本不变**：KUAL →「升级固件后：全部补丁重新开启（并重装常驻网页应用）」，再在「文件夹收藏夹」里重新「开启自动同步」、在「大漫画 epub 转 PDF」里重新「开启」。
   常驻网页应用的**安装清单在 `/mnt/us/extensions/kindletweaks/webapp/installed.txt`**，固件更新不会丢，所以那一步会自动把它们重装回 `appreg.db`；也可以单独点「常驻网页应用」→「重新安装全部常驻应用」。
+  隐藏无线界面（功能 13）的两半也都在这一步里：hbc 那半随功能 1 的 `.patched` 一起写回，状态栏那半由「隐藏状态栏无线图标（nowifi）」重新改一遍 `/etc/upstart/statusbar.conf`。
 - **固件版本变了**：菜单里会显示「文件不匹配」，脚本不会写入。
   1. 用新固件的文件重新生成 `.orig` / `.patched`。
   2. 如果生成脚本找不到特征，按 docs 里的手动方法重新定位。

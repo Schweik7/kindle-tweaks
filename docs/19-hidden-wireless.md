@@ -142,32 +142,73 @@ KPPSettings::QuickSettings::AirplaneWidgetController::execute
 （`setsid sh -c 'sleep 30; lipc-set-prop -i com.lab126.cmd wirelessEnable 1'`），
 否则 SSH 断了没法自己开回来。
 
-## 4. 怎么部署
+## 4. 怎么部署（现在就是固化在设备上的）
 
-**临时试用（推荐先这样，重启即恢复）**：hbc 是只读系统分区里的文件，用一个 tmpfs 盖上去，
-再把内容写进去，然后重启书库进程：
+这一功能有两半，分别落在两处，都在 KUAL 的「Kindle Tweaks」里开关，**重启不受影响**：
+
+| 半 | 落在哪 | 谁管 | KUAL 菜单项 |
+|---|---|---|---|
+| hbc 三处界面 | `/app/KPPMainApp/js/KPPMainApp.js.hbc`（系统分区） | 功能 1 的补丁单元（`files/KPPMainApp.js.hbc.patched`） | 「去除「云端不可用」弹窗 + 隐藏无线界面」 |
+| 状态栏图标 | `/etc/upstart/statusbar.conf` 的 exec 行（系统分区）+ `nowifi/libkt_nowifi.so`（用户分区） | `tweak.sh nowifi on\|off` | 「隐藏状态栏无线图标（nowifi）」 |
+
+### 4.1 hbc：popup 打底，nowifi 叠加
+
+`patch_kpp.py`（去弹窗）和 `patch_kpp_nowifi.py`（隐藏无线界面）打的是**同一个** hbc，
+而「去弹窗」是必备的，所以就让 popup 的 `.patched` 直接做成叠加版，一个开关带两半：
+
+```sh
+python tools/patch_kpp.py        KPPMainApp.js.hbc.orig KPPMainApp.js.hbc.patched
+python tools/patch_kpp_nowifi.py KPPMainApp.js.hbc.patched KPPMainApp.js.hbc.patched   # 就地叠加
+scp KPPMainApp.js.hbc.* root@<kindle-ip>:/mnt/us/extensions/kindletweaks/files/
+```
+
+两个补丁改的区域不重叠，先后顺序无所谓，但 `.patched` 必须是「先 popup 再 nowifi」的结果。
+只想留去弹窗、不要隐藏无线界面时，跳过第二条命令，重新生成 `.patched` 后再点一次 `popup on`
+即可（`set_unit` 按 md5 判断要不要写）。
+
+写入靠 `tweak.sh popup on`（`set_unit`）：先 `mntroot rw`，`cp .patched 目标`，再 `mntroot ro`，
+最后 `restart kppmainapp`。`tweak.sh status` 里的 `popup:` 就是拿目标文件的 md5 和
+`.orig` / `.patched` 比出来的，所以固化以后它显示 `on`。
+
+### 4.2 状态栏：LD_PRELOAD 注入 statusbar 任务
+
+`JunoStatusBarDriver` 由 upstart 任务 `/etc/upstart/statusbar.conf` 拉起，改它的 exec 行
+（和 `libraryview` 改 `kppmainapp.conf` 一个套路，见 docs/07）：
+
+```sh
+tweak.sh nowifi on     # = mntroot rw + sed 改 statusbar.conf 的 exec 行 + kill -HUP 1
+                       #   + 重启 JunoStatusBarDriver（upstart 的 respawn 不会换环境）
+tweak.sh status        # nowifi(statusbar icons): on（状态栏已注入）
+```
+
+改完的那一行长这样：
+
+```
+exec env LD_PRELOAD=/mnt/us/extensions/kindletweaks/nowifi/libkt_nowifi.so /app/bin/JunoStatusBarDriver
+```
+
+`.so` 在用户分区（`extensions/kindletweaks/nowifi/`），不进 git，要在电脑上编译后 scp 过去。
+
+### 4.3 升级固件后
+
+系统分区被替换，两半都会没：`tweak.sh all on`（KUAL 里的「升级固件后：全部补丁重新开启」）
+会把 hbc 写回去、也会重新给 statusbar.conf 加注入行。
+
+### 4.4 临时试用（调试时才用）
+
+不想写系统分区时，可以用 tmpfs 盖住 hbc，重启即恢复：
 
 ```sh
 export PATH=/usr/sbin:/sbin:$PATH
 mount -t tmpfs -o size=64m tmpfs /app/KPPMainApp/js/KPPMainApp.js.hbc
 cat /mnt/us/kt-nowifi-both.hbc > /app/KPPMainApp/js/KPPMainApp.js.hbc
-md5sum /app/KPPMainApp/js/KPPMainApp.js.hbc
 restart kppmainapp
 ```
 
-注意 tmpfs 是**叠**上去的（`/proc/mounts` 里会有多行），而且**重启就没了**，需要重新挂。
-另外这样一来 `tweak.sh status` 里 `popup:` 会显示「文件不匹配」——因为它既不是 `.orig`
-也不是 `.patched` 的 md5，属正常现象。
-
-**正式启用**：按 README 的老办法把生成好的文件放进 `extensions/kindletweaks/files/`
-（`KPPMainApp.js.hbc.orig` / `.patched`），用 KUAL 里的开关写进系统分区。
-⚠ 本补丁和「去除云端弹窗」补丁（`patch_kpp.py`）打的是**同一个** hbc，
-谁做 `.patched` 的基底要先定：目前的做法是先 `patch_kpp.py` 再 `patch_kpp_nowifi.py`
-（两者互不重叠，顺序随便，但 `.patched` 要按这个顺序生成才是叠加版）。
-
-状态栏那个 `.so` 用 `LD_PRELOAD` 注入：改 `/etc/upstart/kppmainapp.conf`（或对应的
-状态栏任务）的 exec 行加 `env LD_PRELOAD=…/libkt_nowifi.so`，和 `libraryview` 的
-`libkt_libview.so` 一个套路，见 docs/07。
+注意 tmpfs 是**叠**上去的（`/proc/mounts` 里会有多行），重启就没了；这时 `tweak.sh status`
+里 `popup:` 会显示「文件不匹配」（既不是 `.orig` 也不是 `.patched` 的 md5），属正常现象。
+状态栏那半同理：临时用可以 `kill` 掉状态栏进程，再用
+`LD_PRELOAD=/tmp/libkt_nowifi.so /app/bin/JunoStatusBarDriver &` 手工起一个（重启即恢复）。
 
 ## 5. 换固件后怎么重做
 
