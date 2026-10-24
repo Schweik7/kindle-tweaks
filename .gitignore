@@ -26,6 +26,9 @@ extensions/kindletweaks/webapp/installed.txt
 *.mkv
 *.webm
 extensions/kindletweaks/fbvideo/play.log
+# 上下键截屏：交叉编译产物和运行日志（源码 keyshot.c 要提交）
+extensions/kindletweaks/keyshot/keyshot
+extensions/kindletweaks/keyshot/keyshot.log
 # 微信传书口令
 extensions/kindletweaks/wxsend/config
 # 微信传书服务端的数据目录（bot_token、企业微信 Secret、管理密码、用户绑定……）
@@ -43,6 +46,7 @@ server/**/config.json
 events.jsonl
 # 临时工作目录（参考资料的下载与中间产物）
 .work/
+tmp/
 # 反汇编/逆向时产生的临时文件（IDA 钩子日志、数据库）
 Hook.log
 IDAHook.log
@@ -58,3 +62,6 @@ IDAHook.log
 lipc.txt
 lipc.before.txt
 lipc.after.txt
+
+# WorkBuddy 的项目记忆目录（本地工作笔记，不入库）
+.workbuddy/

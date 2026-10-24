@@ -11,6 +11,7 @@
 #   tweak.sh debugawake always|charging|off   调试模式：始终阻止 / 仅充电阻止 / 关闭深度休眠推迟
 #   tweak.sh libraryview on|off          主界面重载时默认进入收藏夹视图
 #   tweak.sh nowifi on|off               隐藏状态栏的无线图标（给 JunoStatusBarDriver 注入 libkt_nowifi.so）
+#   tweak.sh keyshot on|off              上下翻页键同时按住 = 截屏（常驻守护进程，截图存 /mnt/us/screenshots）
 #   tweak.sh wxsend on|off|now           书籍投递（微信传书）：亮屏自动同步开关 / 立即同步（配置 wxsend/config）
 #   tweak.sh webapp install|uninstall|launch|state <名字>   常驻网页应用（WAF）：安装并注册 / 卸载 / 打开 / 看状态
 #   tweak.sh webapp scan|list|doctor|restore               候选应用 / 已安装清单 / 自检 / 升级固件后重装
@@ -351,6 +352,53 @@ debugawake_status() {
 		debugawake_label
 	fi
 }
+
+# ---------------------------------------------------------------- 上下键截屏（keyshot）
+# 守护进程是个 X 客户端：在 root window 上 XGrabKey 抢走 PageUp/PageDown。
+# 两键 150ms 内先后按下 → 判定组合，把这一对按键整个吞掉（阅读器收不到，画面完全不翻页），
+# 再调 /usr/sbin/screenshot 存到 /mnt/us/screenshots/；只按一个键 → 临时 ungrab 该键、
+# 用 XTestFakeDeviceKeyEvent 伪装成 keypad 设备原样重放，翻页照常，用户无感。详见 docs/20。
+KS=${EXT}/keyshot
+KS_BIN=${KS}/keyshot                     # 源：用户分区，电脑上交叉编译后 scp 过来
+KS_CONF=${KS}/kindletweaks-keyshot.conf
+KS_JOB=/etc/upstart/kindletweaks-keyshot.conf
+KS_OUT=/mnt/us/screenshots
+
+keyshot() {
+	case "$1" in
+		on)
+			[ -f ${KS_BIN} ] || { say "keyshot: 缺 ${KS_BIN}（先在电脑上编译，见 docs/20）"; return 1; }
+			[ -f ${KS_CONF} ] || { say "keyshot: 缺 ${KS_CONF}"; return 1; }
+			mntroot rw
+			cp ${KS_CONF} ${KS_JOB}
+			chmod 644 ${KS_JOB}
+			mntroot ro
+			mkdir -p ${KS_OUT}
+			start kindletweaks-keyshot >/dev/null 2>&1 || true
+			say "keyshot: on（同时按住上下翻页键截屏）"
+			;;
+		off)
+			stop kindletweaks-keyshot >/dev/null 2>&1 || true
+			mntroot rw
+			[ -f ${KS_JOB} ] && mv ${KS_JOB} /tmp/kindletweaks-keyshot.conf.disabled
+			mntroot ro
+			say "keyshot: off"
+			;;
+		*) say "keyshot: 用法 keyshot on|off"; return 1 ;;
+	esac
+}
+
+keyshot_state() { [ -f ${KS_JOB} ] && echo on || echo off; }
+
+keyshot_status() {
+	[ "$(keyshot_state)" = on ] || { echo off; return; }
+	if pidof keyshot >/dev/null 2>&1; then
+		echo "运行中，已存 $(ls ${KS_OUT}/kt_*.png 2>/dev/null | wc -l) 张（${KS_OUT}）"
+	else
+		echo "已开启但进程没在跑（看 keyshot/keyshot.log）"
+	fi
+}
+
 
 # Home 页固定使用封面网格；图书馆里的内容筛选也会切回 LIBRARY 模式。
 # 只校正顶层默认模式，不锁文件、不动排序/筛选，仍允许当前会话临时切换视图。
@@ -1077,6 +1125,7 @@ EOF
 		toggle "解锁「查看选项→收藏夹」" "$(state collview)" collview 2 "关闭（还原原版）"
 		toggle "PDF 全屏（无底栏无边距）" "$(state pdffull)" pdffull 3 "关闭（还原原版）"
 		toggle "浏览器可下载任意文件（存到 documents）" "$(state browserdl)" browserdl 4 "关闭（还原原版）"
+		toggle "上下翻页键同时按住：截屏" "$(keyshot_state)" keyshot 4.5 "关闭"
 		cat <<EOF
 		{"name": "文件夹收藏夹 [自动同步$(label $(coll_state))]", "priority": 5, "items": [
 			{"name": "立即同步", "priority": 1, "exitmenu": false, "action": "${EXT}/tweak.sh", "params": "coll sync"},
@@ -1185,6 +1234,7 @@ case "$1" in
 		echo "manga(auto): $(manga_state) $(manga_status)"
 		echo "libraryview(default collections): $(libraryview_status)"
 		echo "nowifi(statusbar icons): $(nowifi_status)"
+		echo "keyshot(上下键截屏): $(keyshot_status)"
 		echo "debugawake: $(debugawake_status)"
 		echo "wxsend: $(wxsend_state) $(wxsend_status)"
 		echo "webapp(WAF): $(webapp_count) 个已常驻$([ -f ${WA_LIST} ] && echo "，清单 $(grep -c . ${WA_LIST} 2>/dev/null) 项" || echo "")"
@@ -1200,6 +1250,12 @@ case "$1" in
 			nowifi $2
 		else
 			say "nowifi: 缺 ${NW_SO}，跳过（先在电脑上编译，见 docs/19）"
+		fi
+		# 上下键截屏也不是文件补丁（/etc/upstart 里的一个任务），升级固件后要重装
+		if [ "$2" = on ]; then
+			[ -f ${KS_BIN} ] && keyshot on || say "keyshot: 缺 ${KS_BIN}，跳过（先在电脑上编译，见 docs/20）"
+		else
+			keyshot off
 		fi
 		# on 的时候顺手把常驻网页应用重装一遍：升级固件后 /var/local 或 appreg.db 可能被重置
 		[ "$2" = on ] && webapp_restore
@@ -1244,6 +1300,11 @@ case "$1" in
 	nowifi)
 		nowifi $2
 		screen "kindle-tweaks: statusbar wifi icons $2"
+		menu
+		;;
+	keyshot)
+		keyshot $2
+		screen "kindle-tweaks: screenshot by buttons $2"
 		menu
 		;;
 	manga)
