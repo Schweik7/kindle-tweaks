@@ -190,7 +190,55 @@ ungrab(该键) → fake release(清状态) → 15ms → fake press → 40ms → 
 `SHOT_SETTLE_MS` 只等 200 ms 而不是 v1 的 800 ms：因为**根本没翻页**，画面从一开始就没变过，
 不需要躲黑白闪屏。200 ms 只是给前一次 e-ink 刷新留点余量。
 
-### 5.4 DISPLAY
+### 5.4 文件名带上书名
+
+默认叫 `kt_<时间戳>.png`，读书时希望一眼看出是哪本书，于是从系统的内容目录
+`/var/local/cc.db` 里取（由 ccat 服务维护，**只读**打开，绝不写）：
+
+| 字段 | 含义 |
+|---|---|
+| `p_type='Entry:Item'` | 一条书（收藏夹是 `Collection`，还有 `Entry:Item:Dictionary` 等） |
+| `p_titles_0_nominal` | 书名（**注意不是 `p_title`**） |
+| `p_lastAccess` | 最后打开时间（**大写 A**），按它倒序取第一条就是当前在读的 |
+| `p_location` | 书文件路径 |
+
+```sql
+SELECT p_titles_0_nominal FROM Entries
+WHERE p_type='Entry:Item' AND p_lastAccess>0
+  AND (p_location LIKE '%.azw3' OR p_location LIKE '%.pdf' OR …)
+ORDER BY p_lastAccess DESC LIMIT 1;
+```
+
+两个容易踩的点：
+
+- **必须按 `p_location` 后缀过滤**。`.kual`（KUAL 启动器）也是一条 `Entry:Item`，
+  在 KUAL 里点过菜单后它就会窜到第一名，截图全变成「KUAL」。
+- 它只是「最近打开的那本」，不是「屏幕上这本」。刚切书的一瞬间 cc.db 可能还没更新，
+  那一张会带上一本书的名字（几秒后就正常了）。
+
+**大坑：`/usr/sbin/screenshot` 只吃 ASCII 文件名。** 直接把中文书名交给它：
+
+```
+Command Line Option Parsing Failed: Invalid byte sequence in conversion input
+```
+
+rc=1，文件根本不落盘 —— 但我们的日志照样会打印「screenshot #1 -> …」，看起来像成功了。
+（括号、逗号、空格都没事，只有非 ASCII 会炸。）
+
+所以改成两步：先截到纯 ASCII 的临时名 `.ktshot_<pid>.png`，再在 `sh -c` 里 `mv` 成带书名的最终名。
+
+文件名要白名单化 —— 只放行字母数字、非 ASCII、`_ - ( )`，其余一律换成下划线。
+理由有两个：路径要进 shell 命令（不能留引号和分号），空格换成下划线后命令行里也不用加引号。
+最后截到 54 字节、不劈开半个汉字、去掉截断后未闭合的括号尾巴：
+
+```
+烙印勇士 - 卷41 (三浦建太郎) (z-library.sk, 1lib.sk, z-lib.sk)
+  →  kt_20261025_000206_烙印勇士_-_卷41_(三浦建太郎).png
+```
+
+取不到书名（非阅读界面、书还没被索引、cc.db 打不开）就退回 `kt_<时间戳>.png`。
+
+### 5.5 DISPLAY
 
 X 客户端需要 `DISPLAY`，而 upstart 拉起来的环境里通常没有。双重兜底：
 
@@ -227,9 +275,10 @@ mkdir -p tmp/stub
 scp root@kindle:/usr/lib/libX11.so.6.3.0  tmp/stub/libX11.so
 scp root@kindle:/usr/lib/libXtst.so.6.1.0 tmp/stub/libXtst.so
 scp root@kindle:/usr/lib/libXi.so.6.1.0   tmp/stub/libXi.so
+scp root@kindle:/usr/lib/libsqlite3.so.0.8.6 tmp/stub/libsqlite3.so
 
 python -m ziglang cc -target arm-linux-gnueabi.2.20 -mcpu=cortex_a7 -O2 -s \
-    -L tmp/stub -lX11 -lXtst -lXi \
+    -L tmp/stub -lX11 -lXtst -lXi -lsqlite3 \
     -o extensions/kindletweaks/keyshot/keyshot extensions/kindletweaks/keyshot/keyshot.c
 ```
 
@@ -278,5 +327,9 @@ scp /tmp/keytap root@kindle:/tmp/
 9. **`screenshot` 不需要 `DISPLAY`**，但 X 相关操作需要；两者别混着判断。
 10. **zig 的 gnu target 拒绝 `-static`**。
 11. **本机 glibc 的 stdio 比较脆**：日志统一 `snprintf` + `write`，别用 `fprintf(stderr, …)`。
-12. **XTEST 伪造的按键测不出「状态残留」类问题**：它的事件时序太规整，
+12. **`/usr/sbin/screenshot` 的参数只接受 ASCII**：中文文件名会 `Invalid byte sequence`
+    并且不落盘，但程序本身返回前不报错——日志会骗你。解法是 ASCII 临时名 + `mv`。
+13. **`cc.db` 的书名字段是 `p_titles_0_nominal`、时间是 `p_lastAccess`**（大写 A），
+    不是直觉里的 `p_title` / `p_last_access`；`.kual` 也占一条 `Entry:Item`。
+14. **XTEST 伪造的按键测不出「状态残留」类问题**：它的事件时序太规整，
     真人按住不放才会踩到。这类 bug 只能上手试。

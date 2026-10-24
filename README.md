@@ -24,7 +24,7 @@
 | 11 | 常驻网页应用（WAF） | 越狱后能用 HTML+JS 写界面，但自己写的网页默认不是系统应用。把 `/mnt/us/webapps/<名字>/` 注册进 `appreg.db`，就成了能被启动器/脚本随时拉起的一等 WAF，拿到完整 `window.kindle`（开书、联网、发 lipc）；注册信息在持久分区，不依赖任何缓存，比 Mesquito 覆盖商店缓存的做法耐久 | [docs/16-webapp-waf.md](docs/16-webapp-waf.md) |
 | 12 | 墨水屏视频播放 | 绕开 X 直接写 framebuffer 逐帧刷屏，能在墨水屏上放视频（Bad Apple 实测可播）。A2 波形实测 8.6 fps（640×480）～6.3 fps（满宽 1264×948），**硬件天花板约 9.9 fps**；1bit 帧 + zlib 压缩，全长 Bad Apple 只有 9～16 MB | [docs/17-fbvideo-eink-video.md](docs/17-fbvideo-eink-video.md) |
 | 13 | 隐藏无线界面 + 泡面模式 / 禅模式 | 未注册的机器本来就不该联网，界面上那一排无线入口很碍事：KPP 里的三处（下拉快捷设置那一排、顶栏购物车、⋮ 菜单里的「网页浏览器」「设置」「Amazon Kids」）**叠加在功能 1 的 hbc 补丁上**，状态栏的 Wi-Fi / 飞行模式 / WAN 图标由注入小库换成同尺寸空白（KUAL 菜单里叫「禅模式」）；无线开关也放进 KUAL（叫「泡面模式」，走系统飞行模式小部件同一个 lipc 属性 `com.lab126.cmd wirelessEnable`，1 = 无线开，0 = 无线关） | [docs/19-hidden-wireless.md](docs/19-hidden-wireless.md) |
-| 14 | 上下键同时按住截屏 | Oasis 的翻页键在旁边，读着读着想截图得先摸屏幕。守护进程当 X 客户端，在 root window 上 `XGrabKey` 抢走 PageUp/PageDown：两键 150ms 内先后按下就判成组合，**把这一对按键整个吞掉**（阅读器收不到，画面完全不翻页，截到的正是当前这页）；只按一个键则临时放开、用 XTEST 伪装成 `keypad` 设备原样重放，翻页照常。图存 `/mnt/us/screenshots/` | [docs/20-both-buttons-screenshot.md](docs/20-both-buttons-screenshot.md) |
+| 14 | 上下键同时按住截屏 | Oasis 的翻页键在旁边，读着读着想截图得先摸屏幕。守护进程当 X 客户端，在 root window 上 `XGrabKey` 抢走 PageUp/PageDown：两键 150ms 内先后按下就判成组合，**把这一对按键整个吞掉**（阅读器收不到，画面完全不翻页，截到的正是当前这页）；只按一个键则临时放开、用 XTEST 伪装成 `keypad` 设备原样重放，翻页照常。图存 `/mnt/us/screenshots/`，文件名带上书名（查 `cc.db` 最近在读的那本，如 `kt_20261025_000206_烙印勇士_-_卷41.png`） | [docs/20-both-buttons-screenshot.md](docs/20-both-buttons-screenshot.md) |
 
 ## KUAL 菜单
 
@@ -93,7 +93,7 @@ docs/                       原理、排查过程、新固件上怎么重做
   17-fbvideo-eink-video.md  墨水屏视频播放：.ktvid 格式、波形与帧率实测、屏幕适配取舍、为什么不能更快
   18-epdc-recon-and-handover.md  EPDC v2 侦察（含**自造 1023 相长 LUT 上机实测 = 12.1 秒**）+ **工作交接**（现状、待办、雷区）
   19-hidden-wireless.md     隐藏无线界面（nowifi）：JS 补丁的四个锚点、⋮ 菜单条目 id 的原生出处、状态栏图标注入（禅模式）、泡面模式开关
-  20-both-buttons-screenshot.md 上下键截屏（keyshot）：为什么改走 X 层、XTEST 的设备过滤、grab 期间的 release 坑、判定参数与验证方法
+  20-both-buttons-screenshot.md 上下键截屏（keyshot）：为什么改走 X 层、XTEST 的设备过滤、grab 期间的 release 坑、判定参数、文件名带书名、验证方法
 ```
 
 > ⚠ 本仓库**不包含任何亚马逊的原始文件或补丁后的文件**。补丁都是从你自己机器上提取的文件生成的。
@@ -126,9 +126,10 @@ mkdir -p tmp/stub
 scp root@<kindle-ip>:/usr/lib/libX11.so.6.3.0  tmp/stub/libX11.so
 scp root@<kindle-ip>:/usr/lib/libXtst.so.6.1.0 tmp/stub/libXtst.so
 scp root@<kindle-ip>:/usr/lib/libXi.so.6.1.0   tmp/stub/libXi.so
+scp root@<kindle-ip>:/usr/lib/libsqlite3.so.0.8.6 tmp/stub/libsqlite3.so
 #     注意 gnu target 不支持 -static
 python -m ziglang cc -target arm-linux-gnueabi.2.20 -mcpu=cortex_a7 -O2 -s \
-    -L tmp/stub -lX11 -lXtst -lXi \
+    -L tmp/stub -lX11 -lXtst -lXi -lsqlite3 \
     -o extensions/kindletweaks/keyshot/keyshot extensions/kindletweaks/keyshot/keyshot.c
 
 # 1. 装扩展
@@ -318,7 +319,7 @@ grep -iE "VerifyError|NoClassDef|NoSuchMethod" /var/log/messages   # Java 补丁
 | [17 墨水屏视频播放](docs/17-fbvideo-eink-video.md) | `.ktvid` 帧序列格式与转码、A2/DU4 波形实测（含 DU4 这个坑）、面积与帧率的取舍模型、与 K4 逐像素直驱方案的对比 |
 | [18 EPDC 只读侦察与交接](docs/18-epdc-recon-and-handover.md) | EPDC v2 寄存器表与 LUT/DDR 布局、真机只读侦察结果（working buffer、波形 blob 地址）、**下一步待办与雷区**（接手前必读） |
 | [19 隐藏无线界面 + 泡面模式](docs/19-hidden-wireless.md) | JS 补丁的四个锚点、⋮ 菜单条目 id 的原生出处（`BuildOverflowMenuConfig` / `NavigationActionFactory`）、状态栏图标的 rsvg 注入、`com.lab126.cmd wirelessEnable` 的开关与实测、坑位清单 |
-| [20 上下键截屏](docs/20-both-buttons-screenshot.md) | 为什么 v1 旁听 evdev 做不到「不翻页」、`keypad` 设备与 keycode、KPP 按设备过滤（core XTEST 无效）、grab 期间 release 被吞、三个必须绕开的坑、判定参数表、`tools/keytap.c` 无人值守验证 |
+| [20 上下键截屏](docs/20-both-buttons-screenshot.md) | 为什么 v1 旁听 evdev 做不到「不翻页」、`keypad` 设备与 keycode、KPP 按设备过滤（core XTEST 无效）、grab 期间 release 被吞、按住稍久没反应的成因、判定参数表、文件名带书名（`cc.db` 字段 + screenshot 只吃 ASCII 的坑）、`tools/keytap.c` 无人值守验证 |
 
 11–15 是参考 [KindleModding Wiki](https://kindlemodding.org/)（CC BY-NC 4.0）整理并**重新撰写**的，不是逐字复制。
 其中的事实数据（服务名、属性、机型表）都来自设备取证——服务与属性出自 wiki 作者机器上的 `lipc-probe -a -v` 转储，

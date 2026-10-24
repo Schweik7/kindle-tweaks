@@ -89,6 +89,18 @@ extern int XCloseDevice(Display *, void *);
 extern int XTestFakeDeviceKeyEvent(Display *, void *, unsigned int, Bool,
                                    unsigned long, unsigned int *, int);
 
+/* ---- sqlite3 最小声明（只用来只读查一下 cc.db） ---- */
+extern int sqlite3_open_v2(const char *, void **, int, const char *);
+extern int sqlite3_prepare_v2(void *, const char *, int, void **, const char **);
+extern int sqlite3_step(void *);
+extern const unsigned char *sqlite3_column_text(void *, int);
+extern int sqlite3_finalize(void *);
+extern int sqlite3_close(void *);
+
+#define SQLITE_OK_              0
+#define SQLITE_ROW_             100
+#define SQLITE_OPEN_READONLY_   0x00000001
+
 #define KeyPress_       2
 #define KeyRelease_     3
 #define AnyModifier_    0x8000
@@ -194,21 +206,128 @@ static void replay_tap(int kc)
     XFlush(dpy);
 }
 
+/* 取「最近在读的那本书」的书名。
+ *
+ * 来源是系统的内容目录 /var/local/cc.db（由 ccat 服务维护，这里**只读**）：
+ * Entries 表里 p_type='Entry:Item' 是一条书，p_titles_0_nominal 是书名，
+ * p_lastAccess 是最后打开时间。按它倒序取第一条就是当前这本。
+ *
+ * 只认常见的书籍后缀，把 KUAL 这种 .kual 的“伪内容”排除掉。
+ * 取不到就返回 0，文件名退回原来的纯时间格式。 */
+static int get_book_title(char *out, size_t outsz)
+{
+    static const char *sql =
+        "SELECT p_titles_0_nominal FROM Entries "
+        "WHERE p_type='Entry:Item' AND p_lastAccess>0 AND ("
+        "p_location LIKE '%.azw3' OR p_location LIKE '%.azw' OR p_location LIKE '%.mobi' "
+        "OR p_location LIKE '%.kfx' OR p_location LIKE '%.epub' OR p_location LIKE '%.txt' "
+        "OR p_location LIKE '%.pdf' OR p_location LIKE '%.prc' OR p_location LIKE '%.tpz') "
+        "ORDER BY p_lastAccess DESC LIMIT 1;";
+
+    void *db = NULL, *stmt = NULL;
+    int ok = 0;
+    out[0] = 0;
+
+    if (sqlite3_open_v2("/var/local/cc.db", &db, SQLITE_OPEN_READONLY_, NULL) != SQLITE_OK_) {
+        if (db) sqlite3_close(db);
+        return 0;
+    }
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK_) {
+        if (sqlite3_step(stmt) == SQLITE_ROW_) {
+            const unsigned char *t = sqlite3_column_text(stmt, 0);
+            if (t && t[0]) {
+                snprintf(out, outsz, "%s", (const char *)t);
+                ok = 1;
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    sqlite3_close(db);
+    return ok;
+}
+
+/* 把书名变成能当文件名的样子。
+ *
+ * 只放行 字母 / 数字 / 非 ASCII（汉字等）/ `_ - ( )`，其余一律换成下划线。
+ * 之所以这么严：① 文件名会被塞进 shell 命令（见下面的截图方式），不能留引号、
+ * 分号这类危险字符；② 空格换成下划线，命令行里不用加引号也好使。
+ * 最后截到 max_bytes 字节，并保证不把一个 UTF-8 汉字劈成两半。 */
+static int name_char_ok(unsigned char c)
+{
+    if (c >= 0x80) return 1;                       /* UTF-8 多字节，整段放行 */
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return 1;
+    if (c >= '0' && c <= '9') return 1;
+    return c == '_' || c == '-' || c == '(' || c == ')';
+}
+
+static void sanitize_name(char *s, size_t max_bytes)
+{
+    char *w = s;
+    int prev_us = 0;
+    for (const char *r = s; *r && (size_t)(w - s) < max_bytes; r++) {
+        unsigned char c = (unsigned char)*r;
+        if (name_char_ok(c)) {
+            *w++ = (char)c;
+            prev_us = 0;
+        } else if (!prev_us) {
+            *w++ = '_';
+            prev_us = 1;
+        }
+    }
+    *w = 0;
+
+    for (;;) {
+        if (w > s && w[-1] == '_') { *--w = 0; continue; }
+        /* 去掉未闭合的括号尾巴，别留下 “xxx_(z-library” 这种半截名字 */
+        char *lp = strrchr(s, '(');
+        if (lp && !strchr(lp, ')')) { w = lp; *w = 0; continue; }
+        char *p = w;
+        while (p > s && ((unsigned char)p[-1] & 0xC0) == 0x80) p--;
+        if (p > s) {
+            unsigned char lead = (unsigned char)p[-1];
+            int need = 0;
+            if ((lead & 0xE0) == 0xC0) need = 2;
+            else if ((lead & 0xF0) == 0xE0) need = 3;
+            else if ((lead & 0xF8) == 0xF0) need = 4;
+            if (need && (int)(w - (p - 1)) < need) { w = p - 1; *w = 0; continue; }
+        }
+        break;
+    }
+}
+
 static void take_screenshot(void)
 {
-    char path[256], stamp[32];
+    char path[400], stamp[32], title[128];
     time_t t = time(NULL);
     struct tm tmv;
     localtime_r(&t, &tmv);
     strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
-    snprintf(path, sizeof(path), "%s/kt_%s_%02ld.png",
-             SHOT_DIR, stamp, shots_taken % 100);
+
+    int has_title = get_book_title(title, sizeof(title));
+    if (has_title) {
+        sanitize_name(title, 54);           /* 54 字节 ≈ 18 个汉字，加上时间戳仍在文件系统限制内 */
+        has_title = (title[0] != 0);
+    }
+    if (has_title)
+        snprintf(path, sizeof(path), "%s/kt_%s_%s.png", SHOT_DIR, stamp, title);
+    else
+        snprintf(path, sizeof(path), "%s/kt_%s.png", SHOT_DIR, stamp);
+
+    /* 坑：/usr/sbin/screenshot 的参数解析只吃 ASCII，直接把中文文件名交给它会报
+     * “Invalid byte sequence in conversion input” 然后什么都不存。
+     * 所以先截到纯 ASCII 的临时名，再在 shell 里 mv 改名为带书名的。
+     * 文件名已经过 sanitize_name 白名单化，塞进单引号里是安全的。 */
+    char tmp[128];
+    snprintf(tmp, sizeof(tmp), "%s/.ktshot_%d.png", SHOT_DIR, (int)getpid());
 
     pid_t pid = fork();
     if (pid == 0) {
         int fd = open("/dev/null", O_RDWR);
         if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
-        execl(SHOT_BIN, "screenshot", "-f", path, (char *)NULL);
+        char cmd[640];
+        snprintf(cmd, sizeof(cmd), "%s -f '%s' && mv -f '%s' '%s'",
+                 SHOT_BIN, tmp, tmp, path);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
     }
     if (pid > 0) {
