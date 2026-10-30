@@ -151,8 +151,10 @@ LD_LIBRARY_PATH=/mnt/us/python3/lib /mnt/us/python3/bin/python3.9 $E/mangaconv/m
 
 **为什么不改用 Kindling 或 MOBI**：同一本书用 Kindling 0.27.0 转出的 AZW3 多字节重叠写得正确，所以不会缺章，文本长度也对，悬空 `@font-face` 也删掉了；但：
 - 不用书里的目录，按文件平铺生成 NCX，很多条目叫「Section 5」之类，没有部/章层级；
-- 938 个脚注保留原始 `href="#note1n"`，没转成 `kindle:pos`（同页锚点在设备上能否跳转未实测），转了的 109 个也偏 15–16 字节；
+- 938 个脚注保留原始 `href="#note1n"`，没转成 `kindle:pos`，转了的 109 个也偏 15–16 字节；
 - SVG 封面和旧版 boko 一样是坏页面，也不写 guide（起始位置）。
+
+Oasis 3 实测：Kindling 版没有封面、脚注跳转不正常，正文阅读正常、不缺章。
 
 `--legacy-mobi` 出的 MOBI7+KF8 双格式在支持 KF8 的设备上读的也是其中 KF8 那份。boko 自身不支持 MOBI 输出。所以 boko 加补丁仍是主路径，Kindling 只作回退。
 
