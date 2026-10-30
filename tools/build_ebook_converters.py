@@ -4,7 +4,8 @@
 用法：
     python tools/build_ebook_converters.py extensions/kindletweaks/bin
 
-需要 rustup、Cargo 和 Rust 1.91+。脚本固定源码提交并使用 rust-lld，不需要
+需要 git、rustup、Cargo 和 Rust 1.91+。脚本固定源码提交、打上 tools/patches
+里的补丁并使用 rust-lld，不需要
 ARM 交叉 GCC；Windows、Linux 和 WSL 均可运行。
 """
 
@@ -19,6 +20,7 @@ import tempfile
 
 
 TARGET = "armv7-unknown-linux-musleabi"
+PATCH_DIR = Path(__file__).resolve().parent / "patches"
 PROJECTS = (
     {
         "name": "boko",
@@ -27,6 +29,8 @@ PROJECTS = (
         "version": "0.5.0",
         "url": "https://github.com/zacharydenton/boko.git",
         "rev": "b148716498fdac70134555293a7405913988256a",
+        # 修 KF8 输出：脚注跳转偏移、NCX 顺序/TBS、文本长度、悬空 @font-face
+        "patches": ("boko-kf8-fixes.patch",),
     },
     {
         "name": "Kindling",
@@ -79,14 +83,43 @@ def validate_arm_elf(path):
         raise RuntimeError("%s 被标记成 hard-float，旧 Kindle 无法运行" % path)
 
 
-def install(project, stage, target_dir, env):
+def cargo_checkout(project):
+    """~/.cargo/git/checkouts/<仓库名>-<hash>/<短提交> 里的现成源码，没有则 None。"""
+    home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
+    repo = project["url"].rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    for path in sorted((home / "git" / "checkouts").glob(repo + "-*/" + project["rev"][:7])):
+        if (path / "Cargo.toml").is_file():
+            return path
+    return None
+
+
+def fetch_source(project, temp):
+    """克隆到固定提交并打上 tools/patches 里的补丁，返回源码目录。"""
+    src = temp / ("src-" + project["binary"])
+    try:
+        run(["git", "init", "--quiet", src])
+        run(["git", "-C", src, "fetch", "--quiet", "--depth", "1", project["url"], project["rev"]])
+        run(["git", "-C", src, "checkout", "--quiet", "FETCH_HEAD"])
+    except subprocess.CalledProcessError:
+        # GitHub 不通时改用 cargo 以前 `install --git` 留下的同一提交的源码
+        cached = cargo_checkout(project)
+        if not cached:
+            raise
+        print("GitHub 拉取失败，改用 cargo 缓存：%s" % cached, flush=True)
+        shutil.rmtree(src)
+        shutil.copytree(cached, src, ignore=shutil.ignore_patterns(".git"))
+    for name in project.get("patches", ()):
+        run(["git", "-C", src, "apply", PATCH_DIR / name])
+    return src
+
+
+def install(project, stage, target_dir, env, temp):
     cargo = shutil.which("cargo")
     if not cargo:
         raise RuntimeError("找不到 cargo")
     run([
         cargo, "install",
-        "--git", project["url"],
-        "--rev", project["rev"],
+        "--path", fetch_source(project, temp),
         "--locked",
         "--target", TARGET,
         "--target-dir", target_dir,
@@ -121,7 +154,7 @@ def main():
         stage = temp / "install"
         target_dir = temp / "target"
         for project in PROJECTS:
-            built = install(project, stage, target_dir, env)
+            built = install(project, stage, target_dir, env, temp)
             destination = args.output / project["binary"]
             pending = destination.with_name(destination.name + ".new")
             shutil.copy2(built, pending)

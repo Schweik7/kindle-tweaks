@@ -134,6 +134,25 @@ LD_LIBRARY_PATH=/mnt/us/python3/lib /mnt/us/python3/bin/python3.9 $E/mangaconv/m
 4. 只有两个后端都失败才把该书记为 `failed`；成功时在 `state.json` 的 `backend` 字段记录实际使用者。
 5. 输出先写在 `/mnt/us/.kindletweaks_tmp/ebook-convert/`，校验完整后再移到 epub 旁边，命名为同名 `.azw3`。
 
+### boko 的 KF8 补丁（`tools/patches/boko-kf8-fixes.patch`）
+
+《人生拼图版》暴露了 boko 0.5.0 KF8 输出的几处错误：读完前言翻页直接跳到第五章、脚注点了跳不准、调整字体后报「如果您从亚马逊购买了此内容，请从下载项中移除，并从云端重新下载」。逐项和 calibre 的输出对比后，构建时打上以下补丁（已提交上游：[issue #34](https://github.com/zacharydenton/boko/issues/34)、[PR #35](https://github.com/zacharydenton/boko/pull/35)；合并后可去掉补丁、直接固定到新提交）：
+
+| 问题 | boko 原来的做法 | 改成（与 calibre / KindleGen 一致） |
+|---|---|---|
+| **整章整段消失**（前言、第一章、第二章前半、第三、四章都看不到） | 文本按 4096 字节硬切成记录，切口常落在 3 字节的汉字中间，但每条记录末尾的多字节重叠项一律写 0。Kindle 解码到残字就把跨这个切口的整个片段丢掉；看不到的片段正好都跨了这种切口，看得到的都没跨。英文书没有多字节字符，所以不出问题 | 像 calibre 的 `read_text_record` 一样，把补全残字所需的后续字节写进重叠项（本书 294 条记录中有 165 条需要） |
+| 封面页消失 | 封面是 `<svg><image xlink:href="../Images/cover.jpg"/></svg>`：`xlink:href` 没改成 `kindle:embed:`，`xmlns:xlink` 又被当成 EPUB 命名空间删掉，这一页成了不合法的 XHTML | 只包一张图的 `<svg>` 改写成普通 `<img>`，再走正常的图片引用改写 |
+| 脚注、目录跳转 | `kindle:pos:fid:off` 指向标签里 ` aid="` 属性的位置，落在开始标签中间（本书 1047 个链接全部偏 17–60 字节） | 指向该元素的 `<` |
+| 翻页跳章 | NCX 按深度优先排列（第一部、第 1–21 章、第二部……交错）；TBS 生成照搬 calibre，假设同级条目下标连续，结果也跟着错 | NCX 按层级广度优先排列：先所有「部」，再依次是各部的章 |
+| 文本长度 | 记录 0 和 FCIS 里的文本长度只算 HTML，不含 CSS 流 | 写入全部流的总长度 |
+| 调字体报错（重新排版时同样会碰到残字，主因见第一行） | epub 的 `@font-face` 引用了包里不存在的字体文件，boko 把悬空的 `url()` 原样保留（路径还改错成 `../../../Fonts/`） | 没有任何 `url()` 能解析成 `kindle:embed:` 的 `@font-face` 整条删除；`local()` 在 Kindle 上本就无效，引用它的 `font-family` 回落到阅读器字体 |
+
+改完后 boko 自带的测试全部通过。构建脚本只浅取固定提交；GitHub 不通时回退到 `~/.cargo/git/checkouts` 里 cargo 以前留下的同一提交的源码。第一项用 calibre 查不出来：它的阅读器解析链接时会往回找最近的标签，所以容错；要按片段表把 HTML 重组出来，逐个核对链接目标是否正好落在 `<` 上。
+
+**为什么不改用 Kindling 或 MOBI**：Kindling（包括 `--legacy-mobi` 出的 MOBI7+KF8 双格式）在同一本书上更差——大部分脚注留着原始 `href="#note1n"`，Kindle 的 KF8 阅读器无法跳转，剩下的位置链接同样偏移；双格式 `.mobi` 在支持 KF8 的设备上读的也是其中 KF8 那份。boko 自身不支持 MOBI 输出。
+
+用旧版 boko 转过的书，要重新放入 epub 才能用新版重转：删掉 documents 里对应的 `.azw3`（`.sdr` 可留着，ASIN 按 epub 内容计算不变），再从 `state.json` 删掉那一条。
+
 ### 构建与安装
 
 电脑装好 rustup 和 Rust 1.91+ 后，在仓库根目录运行：
