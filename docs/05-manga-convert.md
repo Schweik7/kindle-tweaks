@@ -149,7 +149,12 @@ LD_LIBRARY_PATH=/mnt/us/python3/lib /mnt/us/python3/bin/python3.9 $E/mangaconv/m
 
 改完后 boko 自带的测试全部通过。构建脚本只浅取固定提交；GitHub 不通时回退到 `~/.cargo/git/checkouts` 里 cargo 以前留下的同一提交的源码。第一项用 calibre 查不出来：它的阅读器解析链接时会往回找最近的标签，所以容错；要按片段表把 HTML 重组出来，逐个核对链接目标是否正好落在 `<` 上。
 
-**为什么不改用 Kindling 或 MOBI**：Kindling（包括 `--legacy-mobi` 出的 MOBI7+KF8 双格式）在同一本书上更差——大部分脚注留着原始 `href="#note1n"`，Kindle 的 KF8 阅读器无法跳转，剩下的位置链接同样偏移；双格式 `.mobi` 在支持 KF8 的设备上读的也是其中 KF8 那份。boko 自身不支持 MOBI 输出。
+**为什么不改用 Kindling 或 MOBI**：同一本书用 Kindling 0.27.0 转出的 AZW3 多字节重叠写得正确，所以不会缺章，文本长度也对，悬空 `@font-face` 也删掉了；但：
+- 不用书里的目录，按文件平铺生成 NCX，很多条目叫「Section 5」之类，没有部/章层级；
+- 938 个脚注保留原始 `href="#note1n"`，没转成 `kindle:pos`（同页锚点在设备上能否跳转未实测），转了的 109 个也偏 15–16 字节；
+- SVG 封面和旧版 boko 一样是坏页面，也不写 guide（起始位置）。
+
+`--legacy-mobi` 出的 MOBI7+KF8 双格式在支持 KF8 的设备上读的也是其中 KF8 那份。boko 自身不支持 MOBI 输出。所以 boko 加补丁仍是主路径，Kindling 只作回退。
 
 用旧版 boko 转过的书，要重新放入 epub 才能用新版重转：删掉 documents 里对应的 `.azw3`（`.sdr` 可留着，ASIN 按 epub 内容计算不变），再从 `state.json` 删掉那一条。
 
